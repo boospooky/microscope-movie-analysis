@@ -178,8 +178,8 @@ def create_filesdf(super_dir):
     col_data = [pos_vec, pad_vec, padcol_vec, padrow_vec, frame_vec, channel_vec, img_files, time_vec]
     n_rows = len(img_files)
     n_pads = len(np.unique(pad_vec))
-    files_df = pd.DataFrame(
-        dict(zip(columns, col_data)))
+    n_pos = np.int(n_rows/n_frames/n_chan)
+    files_df = pd.DataFrame(dict(zip(columns, col_data)))
 
     files_df.sort_values(by='time', inplace=True)
     # TODO : reintroduce check that each position has the same number of frames
@@ -244,11 +244,11 @@ def plot_positions(cor_pos_df):
     plt.savefig('corposdf.png')
     plt.close('all')
 
-gb_pad = files_df.groupby(('pad','frame','channel'))
-gb_pos = files_df.groupby(('pos','frame','channel'))
 um_pix = 1.6161
 
-def get_bg_img(frame, channel):
+def get_bg_img(frame, channel, files_df):
+    gb_pad = files_df.groupby(('pad','frame','channel'))
+    gb_pos = files_df.groupby(('pos','frame','channel'))
     fns = gb_pad.get_group((6,frame,channel)).fn
     imgs = [skimage.io.imread(fn) for fn in fns]
     h, w = imgs[0].shape
@@ -327,6 +327,6 @@ bg_tmpl = 'worker_outputs/bg_arr_{}_{}.npy'
 #         bg_arr = get_bg_img(frame_i, chan)
 #         np.save(bg_tmpl.format(frame_i, chan), bg_arr)
 
-out_fns = process_all(files_df, cor_pos_df)
-df = pd.concat([pd.read_csv(fn, index_col=None) for fn in out_fns])
+# out_fns = process_all(files_df, cor_pos_df)
+# df = pd.concat([pd.read_csv(fn, index_col=None) for fn in out_fns])
 
