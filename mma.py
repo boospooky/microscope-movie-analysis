@@ -154,7 +154,6 @@ def create_filesdf(super_dir):
     n_chan = len(chan_ind)
     chan_int_dict = dict(zip(chan_int, np.arange(n_chan)))
     chan_name = [all_channel_dict[xx] for xx in chan_ind]
-    n_pos = len(pos_dirs)#summ_dict['Positions']
     im_width = summ_dict['Width']
     im_height = summ_dict['Height']
 
