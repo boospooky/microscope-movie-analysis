@@ -159,11 +159,15 @@ def get_exp_summary_from_fn(fn):
     n_chan = len(chan_ind_list)
     im_width = summ_dict['Width']
     im_height = summ_dict['Height']
+#    binning = all_metadata['Binning']
+#    objective = summ_dict['Objective-State']
     return n_chan, chan_ind_list, chan_names, im_width, im_height
 
 def make_files_df(super_dir):
     img_files = find_tiffs_in_dir(super_dir)
-    time_df_fn = os.path.join(super_dir, 'time_df.csv')
+    if len(img_files) < 1:
+        return 1
+    time_df_fn = os.path.abspath(os.path.join(super_dir, 'time_df.csv'))
     # See if time_vec has been made previously
     if not os.path.isfile(time_df_fn):
         time_vec = get_timevec(img_files)
@@ -174,30 +178,38 @@ def make_files_df(super_dir):
     else:
         time_df = pd.read_csv(time_df_fn, index_col=None)
         time_vec, img_files = time_df[['time','fn']].values.T
-    
     # Extract movie metadata from an image file
-    if len(img_files) < 1:
-        return 1
     out = get_exp_summary_from_fn(img_files[0])
-    n_chan, chan_ind_lis, chan_names, im_width, im_height = out
+    n_chan, chan_ind_lis, chan_names, im_width, im_height  = out
 
     # Interpret pad, frame, channel from filenames
-    img_re_pattern = r'{}/(?P<pad>[0-9]+)-Pos_(?P<padcol>[0-9]+)_(?P<padrow>[0-9]+)/.*_(?P<frame>[0-9]*)_(?P<channel>[0-9]*)_000.tif'.format(super_dir)
+    posname_pattern = r'(?P<posname>[a-zA-Z\-0-9_]+)'
+    filename_pattern = r'(?P<imgprefix>[a-zA-Z\-0-9]+)_(?P<frame>[0-9]*)_(?P<channel>[0-9]*)_(?P<zslice>[0-9]*).tif'
+    img_re_pattern = os.path.join(super_dir, posname_pattern, filename_pattern)
     rem = re.findall(img_re_pattern, '\n'.join(img_files), re.MULTILINE)
-    rem_arr = np.array(rem)
-    rem_arr[rem_arr==''] = -1
-    metadata_arr = rem_arr.astype(np.int)
-    n_rows = metadata_arr.shape[0]
-    pad_vec, padcol_vec, padrow_vec, frame_vec, channel_vec = metadata_arr.T
+    rem_arr = np.array(rem,dtype=object)
+    rem_arr[rem_arr==''] = np.nan
+    posname_vec, imgprefix_vec, frame_vec, channel_vec, zslice_vec = rem_arr.T
+
+    # Extract pad information from posname_vec where you can
+    array_pattern = r'(?P<pad>[0-9]+)-Pos_(?P<padcol>[0-9]+)_(?P<padrow>[0-9]+)'
+    rem = re.findall(array_pattern, '\n'.join(posname_vec), re.MULTILINE)
+    rem_arr = np.array(rem,dtype=object)
+    rem_arr[rem_arr==''] = np.nan
+    pad_vec, padcol_vec, padrow_vec = rem_arr.T
+    n_rows = len(posname_vec)
 
     # Make dataframe
     # metadata and timevec data created by looping through img_files
     # therefore rows of each associated with the same file
-    columns = ['pad','padcol','padrow','frame','channel','fn', 'time']
-    col_data = [pad_vec, padcol_vec, padrow_vec, frame_vec, channel_vec, img_files, time_vec]
+    columns = ['posname','imgprefix','pad','padcol','padrow','frame','channel','zslice','fn','time']
+    col_data = [posname_vec, imgprefix_vec, pad_vec, padcol_vec, padrow_vec, frame_vec,
+                channel_vec, zslice_vec, img_files, time_vec]
+    dtypes = [str,str,np.int,np.int,np.int,np.int,np.int,np.int,str,np.int]
+    col_data = [xx.astype(yy) for xx, yy in zip(col_data, dtypes)]
     files_df = pd.DataFrame(dict(zip(columns, col_data)))
     files_df.sort_values(by='time', inplace=True)
-    
+
     # Each frame should be associated with the same number of images. 
     # If this is not the case, the acquisition was aborted.
     # Remove rows corresponding to the frames with too few images
@@ -209,8 +221,10 @@ def make_files_df(super_dir):
         drop_inds = gb_frame.get_group(frame_i).index
         files_df.drop(drop_inds, axis=0, inplace=True)
     files_df = files_df.reindex()
+
+    # Assign integer values to each position. If any are missed, throw exception
     files_df['pos'] = -np.ones(n_rows, dtype=np.int)
-    gb_pos = files_df.groupby(['pad', 'padcol','padrow'])
+    gb_pos = files_df.groupby(['posname'])
     for i, inds in enumerate(gb_pos.groups.values()):
         files_df.loc[inds,'pos'] = i
     assert not np.any(files_df.pos == -1)
@@ -245,21 +259,20 @@ def make_positions_df(files_df):
 
 def plot_positions(cor_pos_df, out_fn):
     plt.figure(figsize=(18,18))
-    for p_i in np.arange(n_pos):
-        colors = sns.color_palette('Set1', n_colors=n_pads)
-        point_color = colors[np.int(cor_pos_df.loc[p_i,"pad"])]
+    for p_i in cor_pos_df.index:
+        #colors = sns.color_palette('Set1', n_colors=n_pads)
+        #point_color = colors[np.int(cor_pos_df.loc[p_i,"pad"])]
         plt.plot(np.float(cor_pos_df.x[p_i]),
                  -np.float(cor_pos_df.y[p_i]),
                  '.',
-                 label=cor_pos_df.pad[p_i],
+                 #label=cor_pos_df.pad[p_i],
                  ms=20,
-                 c=point_color)
+                 c='g')
         plt.text(np.float(cor_pos_df.x[p_i]),
                  -np.float(cor_pos_df.y[p_i]),
                  '{}'.format(p_i),
                  fontsize=14,
                  rotation=15)
-    plt.legend()
     plt.gca().set_aspect('equal')
     plt.savefig(out_fn)
     plt.close('all')
@@ -332,6 +345,7 @@ def write_movie_no_bg(out_fn, pad_ind, files_df, cor_pos_df, scale=4, skip=5, ro
             frame_n = len(frame_vals)
             ind_min, ind_max = np.array([0.05*frame_n, 0.95*frame_n],dtype=np.int)
             vmin, vmax = frame_vals[ind_min], frame_vals[ind_max]
+            vmax = np.max([vmax+3e2,2e3])
             norm_fn = mpl_colors.Normalize(vmin, vmax, clip=True)
             norm_vec.append(norm_fn)
         for chan_ind, chan_slot in enumerate(chan_vec):
@@ -375,7 +389,7 @@ class Acquisition():
             raise(ValueError("Input string does not specify a directory or file"))
     
     def _init_dir(self, super_dir):
-        self.super_dir = super_dir
+        self.super_dir = os.path.abspath(super_dir)
         self.files_df = make_files_df(super_dir)
         self.expname = os.path.split(os.path.abspath(self.super_dir))[-1]
         if type(self.files_df) is not pd.DataFrame:
@@ -404,7 +418,7 @@ class Acquisition():
 
     def plot_positions(self, out_fn=None):
         if out_fn is None:
-            out_fn = os.path.join(self.super_dir, '_cor_pos.png')
+            out_fn = os.path.join(self.super_dir, self.expname, '_cor_pos.png')
         plot_positions(self.cor_pos_df, out_fn)
 
     def write_movie_no_bg(self, pad_ind, scale=8, skip=1):
@@ -518,4 +532,5 @@ with Pool(4) as pool:
 for acq in acq_list:
     acq.rotation = 180
     acq.mag = 10
-    acq.write_all_pad_gifs_no_bg()
+    acq.plot_positions()
+    # acq.write_all_pad_gifs_no_bg(scale=8)
