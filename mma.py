@@ -42,7 +42,7 @@ from IPython.display import HTML
 
 from skimage.external.tifffile import TiffWriter
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 import skimage.filters
 import skimage.io
@@ -98,14 +98,24 @@ def img_metadata_dict_full(img):
 
 def fn_metadata(fn):
     '''Wrapper for reading full metadata dictionary from a filename'''
-    with Image.open(fn) as img:
-        out = img_metadata_dict(img)
+    try:
+        with Image.open(fn) as img:
+            out = img_metadata_dict(img)
+        return out
+    except UnidentifiedImageError as err:
+        print(err)
+        return 1
     return out
 
 def fn_metadata_full(fn):
     '''Wrapper for reading full metadata dictionary from a filename'''
-    with Image.open(fn) as img:
-        out = img_metadata_dict_full(img)
+    try:
+        with Image.open(fn) as img:
+            out = img_metadata_dict_full(img)
+        return out
+    except UnidentifiedImageError as err:
+        print(err)
+        return 1
     return out
 
 def ctime(fname):
@@ -239,6 +249,9 @@ def make_positions_df(files_df):
     n_pos = len(pos_df)
 
     all_metadata = fn_metadata_full(files_df['fn'].values[0])
+    if type(all_metadata) is int:
+        if all_metadata == 1:
+            return 1
     summ_dict = all_metadata['Summary']
     label_vec = [xx['Label'] for xx in summ_dict['InitialPositionList']]
     xy_vec = [xx['DeviceCoordinatesUm']['XYStage'] for xx in summ_dict['InitialPositionList']]
@@ -397,6 +410,10 @@ class Acquisition():
                 print('error, aborting dir {}'.format(super_dir))
                 return 1
         self.cor_pos_df = make_positions_df(self.files_df)
+        if type(self.cor_pos_df) is not pd.DataFrame:
+            if self.cor_pos_df == 1:
+                print('error, aborting dir {}'.format(super_dir))
+                return 1
         metadata = get_exp_summary_from_fn(self.files_df['fn'].values[-1])
         self.n_chan, self.chan_ind_list, self.chan_names, self.im_width, self.im_height = metadata
         files_df_fn = os.path.abspath(os.path.join(super_dir, 'files_df.csv'))
@@ -522,15 +539,19 @@ def process_all(files_df, cor_pos_df):
 with open('img_dirs.txt', 'r') as f:
     lines = f.read().splitlines()
 
-with Pool(4) as pool:
-    res = pool.map_async(Acquisition, lines)
-    res.wait()
-    pool.close()
-    pool.join()
-    acq_list = res.get()
-
-for acq in acq_list:
-    acq.rotation = 180
-    acq.mag = 10
+for fn in lines:
+    acq = Acquisition(fn)
     acq.plot_positions()
-    # acq.write_all_pad_gifs_no_bg(scale=8)
+
+# with Pool(4) as pool:
+#     res = pool.map_async(Acquisition, lines)
+#     res.wait()
+#     pool.close()
+#     pool.join()
+#     acq_list = res.get()
+# 
+# for acq in acq_list:
+#     acq.rotation = 180
+#     acq.mag = 10
+#     acq.plot_positions()
+#     # acq.write_all_pad_gifs_no_bg(scale=8)
