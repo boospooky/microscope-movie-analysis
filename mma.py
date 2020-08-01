@@ -85,7 +85,7 @@ pad_metadata_dict = {'180312_full_circuit_w_senders/20180302_2':((0,1,2)),
 '190222_pfb_test/20190222_1':(np.arange(57,88)),
 '190725_osc2/data':(np.arange(0,8),np.arange(8,19),np.arange(19,32),np.arange(32,44),np.arange(44,56)),
 '190726_i52_2/ladder_img_1':((0,1,2),(3,4,5),(6,7,8)),
-'190727_pfbs/img_2':(np.arange(70,82)),
+'190727_pfbs/img_2':(np.arange(70,82),),
 '180316/20180316_fullcircuit_longpads_1':((0,),(1,),(2,)),
 '180316/20180316_fullcircuit_longpads_1am_1':((0,1),(2,3),(4,5)),
 '180316/20180316_fullcircuit_longpads_2_3':((0,1,2),(3,4,5),(6,7,8)),
@@ -117,9 +117,26 @@ pad_mag_dict = {'180312_full_circuit_w_senders/20180302_2':True,
 '190126_rhl_strain_6/20190126_4':True,
 '190221_inducer_test/20190221_1':True,
 '190222_pfb_test/20190222_1':True,
+'190225_rhl_pulser/20190225_1':True,
+'190226_rhl_pulsers_again/20190226_1':False,
+'190226_rhl_pulsers_again/20190226_2_1':False,
+'190303_cin_pulsers/20190303_3':True,
+'190312_many_small_pads/20190312_1':True,
+'190313_cin_again/20190313_3':False,
+'190314_rhl_pulsers/20190314_1':False,
+'190314_rhl_pulsers/20190314_2':False,
+'190316/20190316_2':True,
+'190411_constitutives_again/img_1':True,
+'190413_constitutives_again/img_1':True,
+'190418_receivers/img_2':False,
 '190725_osc2/data':True,
 '190726_i52_2/ladder_img_1':True,
-'190727_pfbs/img_2':True,
+'190727_pfbs/img_2':False,
+'191018_rpa_senders_cin_pulse/img_1':False,
+'191018_rpa_senders_cin_pulse/img_2':False,
+'200613_unordered/img_3':True,
+'200626_finalday/img_1':True,
+'200627_secondfinalday/img_1':True,
 '180316/20180316_fullcircuit_longpads_1':True,
 '180316/20180316_fullcircuit_longpads_1am_1':True,
 '180316/20180316_fullcircuit_longpads_2_3':True,
@@ -134,16 +151,89 @@ pad_mag_dict = {'180312_full_circuit_w_senders/20180302_2':True,
 'movies/20190108_1':True,
 'movies/20190108_again_1':True,
 'movies/20190110_both_pulsers_1':True,
+'movies/20190224_1':True,
 '20190122_small_rhl_pads/20190122_1':True,
 '20190122_small_rhl_pads/20190122_b_1':True}
+
+pad_obj_dict = {'180312_full_circuit_w_senders/20180302_2':'1',
+'180313_full_circuit_w_senders/20180313_1':'1',
+'180314_full_circuit_w_senders/20180314_1':'1',
+'180316/20180316_fullcircuit_longpads_1':'1',
+'180320/180320_fullcircuit_longpads_1':'1',
+'180601/180601_1':'5',
+'180711/20180711_1':'5',
+#'180822_movie/20180822_1':True,
+'181222_movie/20181222_1':'5',
+'190126_rhl_strain_6/20190126_2':'5',
+'190126_rhl_strain_6/20190126_4':'5',
+'190221_inducer_test/20190221_1':'5',
+'190222_pfb_test/20190222_1':'5',
+'190225_rhl_pulser/20190225_1':'5',
+'190226_rhl_pulsers_again/20190226_1':'5',
+'190226_rhl_pulsers_again/20190226_2_1':'5',
+'190303_cin_pulsers/20190303_3':'5',
+'190312_many_small_pads/20190312_1':'5',
+'190313_cin_again/20190313_3':'5',
+'190314_rhl_pulsers/20190314_1':'5',
+'190314_rhl_pulsers/20190314_2':'5',
+'190316/20190316_2':'5',
+'190411_constitutives_again/img_1':'5',
+'190413_constitutives_again/img_1':'5',
+'190418_receivers/img_2':'5',
+'190725_osc2/data':'5',
+'190726_i52_2/ladder_img_1':'2',
+'190727_pfbs/img_2':'5',
+'191018_rpa_senders_cin_pulse/img_1':'5',
+'191018_rpa_senders_cin_pulse/img_2':'5',
+'191212_rpa_senders_again/bf_final_1':'5',
+'191212_rpa_senders_again/img_1':'5',
+'191217_rpa_thin_attmpt/img_1':'5',
+'191219_thin_attempt_2/bf_initial':'5',
+'191219_thin_attempt_2/img_3':'5',
+'200130_cin_pulsers_and_reporters/img_1':'5',
+'200131_cin_pulser_reporter/img_1':'5',
+'200131_cin_pulser_reporter/img_2':'5',
+'200213_cin_tests/bf_initial_1':'5',
+'200213_cin_tests/img_1':'5',
+'200307_prs/final_surplus_1':'5',
+'200307_prs/img_1':'5',
+'200307_prs/img_2':'5',
+'200307_prs/img_3':'5',
+'200307_prs/initial_1':'5',
+'200307_prs/initial_2':'5',
+'200309_prs/img_1':'5',
+'200309_prs/img_2':'5',
+'200309_prs/initial_bf_1':'5',
+'200309_prs/sparse_grid_1':'5',
+'200309_prs/sparse_grid_yfp_1':'5',
+'200613_unordered/img_3':'5',
+'200626_finalday/img_1':'5',
+'200627_secondfinalday/img_1':'5',
+'180316/20180316_fullcircuit_longpads_1':'5',
+'180316/20180316_fullcircuit_longpads_1am_1':'5',
+'180316/20180316_fullcircuit_longpads_2_3':'5',
+'20180319/20180319_fullcircuit_longpads_1':'5',
+'movies/20180420_AGAIN_1':'5',
+'20180509_three_fc_variants/20180509_1':'5',
+'20180517_i53_2_nosender/20180517_3':'5',
+'20181208_rhlpulsetry/20181208_1':'5',
+'20181208_rhlpulsetry/20181208_after_failure_1':'5',
+'20181208_rhlpulsetry/20181208_fewwer_points_1':'5',
+'movies/20181211_1':'5',
+'movies/20190108_1':'5',
+'movies/20190108_again_1':'5',
+'movies/20190110_both_pulsers_1':'5',
+'movies/20190224_1':'5',
+'20190122_small_rhl_pads/20190122_1':'5',
+'20190122_small_rhl_pads/20190122_b_1':'5'}
 
 pad_rotation_dict = {'180312_full_circuit_w_senders/20180302_2':0,
 '180313_full_circuit_w_senders/20180313_1':0,
 '180314_full_circuit_w_senders/20180314_1':0,
 '180316/20180316_fullcircuit_longpads_1':0,
 '180320/180320_fullcircuit_longpads_1':0,
-'180601/180601_1':0,
-'180711/20180711_1':0,
+'180601/180601_1':-2.8889,
+'180711/20180711_1':3.4375,
 '180822_movie/20180822_1':0,
 '181222_movie/20181222_1':0,
 '190126_rhl_strain_6/20190126_2':0,
@@ -153,6 +243,8 @@ pad_rotation_dict = {'180312_full_circuit_w_senders/20180302_2':0,
 '190725_osc2/data':0,
 '190726_i52_2/ladder_img_1':0,
 '190727_pfbs/img_2':0,
+'191018_rpa_senders_cin_pulse/img_1':90,
+'191018_rpa_senders_cin_pulse/img_2':90,
 '180316/20180316_fullcircuit_longpads_1':0,
 '180316/20180316_fullcircuit_longpads_1am_1':0,
 '180316/20180316_fullcircuit_longpads_2_3':0,
@@ -171,7 +263,6 @@ pad_rotation_dict = {'180312_full_circuit_w_senders/20180302_2':0,
 '20190122_small_rhl_pads/20190122_b_1':0}
 
 # Functions
-
 def debug_log(error, msg=None, traceback=None):
     with open('debug.log','a') as f:
         f.write(time.asctime()+"\n")
@@ -214,7 +305,6 @@ def img_metadata_dict_full(img):
     in_str = metadata_str[9:].replace('\n','').replace('\s*','').replace('null','None').replace('false','False').replace('true','True')
     out_dict = ast.literal_eval(in_str)
     return out_dict
-
 
 def fn_metadata(fn):
     '''Wrapper for reading full metadata dictionary from a filename'''
@@ -562,7 +652,7 @@ def write_movie_no_bg(out_fn, pad_ind, files_df, cor_pos_df, pixel_size, scale=4
                 x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
                 count_portion = count_arr[y0:y0+h,x0:x0+w]
                 im_arr[:] = 0
-                im_arr += load_img(frame_ind, pos, channel)
+                im_arr += load_img(frame_ind, pos, channel) #- load_img(0, pos, channel)
                 pad_arr[y0:y0+h,x0:x0+w,chan_i] += im_arr # - bg_arr
             pad_arr[:,:,chan_i] /= count_arr
 
@@ -614,9 +704,6 @@ class WriteHelper():
     h, w = im_height//scale, im_width//scale
     self.one_arr = skimage.transform.rotate(np.ones((h,w)),self.rotation,resize=True)
     h, w = self.one_arr.shape
-    for pos in pos_list:
-        x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
-        count_arr[y0:y0+h,x0:x0+w] += self.one_arr
     pos_lims = (pad_df[['x','y']]/pixel_size).astype(np.int)
     xlims = np.array([pad_df.x.min(), pad_df.x.max()])/pixel_size + w*np.array([-0.25,1.25])
     ylims = np.array([pad_df.y.min(), pad_df.y.max()])/pixel_size + h*np.array([-0.25,1.25])
@@ -627,44 +714,80 @@ class WriteHelper():
     while fig_h > 1e4 or fig_w > 1e4:
         fig_h, fig_w = np.array([fig_h, fig_w])/10
     count_arr = np.zeros((pad_h, pad_w),dtype=np.float32)
+    pos_list = self.pad_df.index
+    for pos in pos_list:
+        x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
+        count_arr[y0:y0+h,x0:x0+w] += self.one_arr
     self.count_arr,self.uncovered_arr,self.covered_arr = count_arr,count_arr<=0,count_arr>0
     self.count_arr[self.count_arr<=0] = 1
     self.h, self.w = h, w
     self.fig_h, self.fig_w = fig_h, fig_w
     self.pixel_size = pixel_size
     self.rel_mins,self.pos_list,self.pos_lims = rel_mins,pos_list,pos_lims
-    self.pad_arr, self.img_arr = np.zeros((pad_h, pad_w, n_chan),dtype=np.float32), np.zeros((pad_h, pad_w, 3),dtype=np.float32)
+    self.pad_arr, self.img_arr = np.zeros((pad_h, pad_w, self.acq.n_chan),dtype=np.float32), np.zeros((pad_h, pad_w, 3),dtype=np.float32)
 
-  def __init__(self, acq, scale=8, pad_ind=None):
+  def __init__(self, acq, scale=8, pad_ind=None, bg_option='default'):
     if pad_ind is None:
       pad_ind = 0
+
+    # Select bg option
+    bg_options = ['default', 'init', 'pos_list', 'comb']
+    bg_fns = [self.def_load_bg_img, self.load_init_bg_img, self.load_bg_poslist_img, self.load_comb_bg_img]
+    bg_dict = dict(zip(bg_options, bg_fns))
+    self.load_bg_img = bg_dict[bg_option]
+
     # Get movie metadata
     self.acq = acq
     uint_max = 65535
+
     # Setup plotting variables
-    self.pad_df = cor_pos_df.groupby('pad').get_group(pad_ind)
+    self.pad_df = acq.cor_pos_df.groupby('pad').get_group(pad_ind)
     self.chan_vec = acq.chan_ind_list
     self.pixel_size=acq.pixel_size
     self.scale,self.rotation = scale,acq.rotation
+    self._set_scale(scale)
 
-  def load_img(self, frame, pos, channel):
-    frame_bool = self.files_df.frame==frame
-    pos_bool = self.files_df.pos==pos
-    chan_bool = self.files_df.channel == channel
-    indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
-    if sum(indx_bool) < 1:
-      return skimage.transform.rotate(np.zeros((self.h,self.w),dtype=np.float32), self.rotation)
-      error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
-      error_msg = error_msg.format(self.out_fn, frame, pos, channel)
-      print(error_msg)
-    fn = self.files_df.loc[indx_bool,'fn'].values[0]
-    try:
-      img = skimage.io.imread(fn).astype(np.float32)
-    except Exception as error:
-      print('import img error {}'.format(fn))
-      raise error
-    img = skimage.transform.downscale_local_mean(img, (self.scale, self.scale))
-    return skimage.transform.rotate(img, self.rotation, resize=True)
+  def load_img(self, frame, pos, channel, sigma=None):
+      frame_bool = self.acq.files_df.frame==frame
+      pos_bool = self.acq.files_df.pos==pos
+      chan_bool = self.acq.files_df.channel == channel
+      indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
+      if sum(indx_bool) < 1:
+        return skimage.transform.rotate(np.zeros((self.h,self.w),dtype=np.float32), self.rotation, resize=True)
+        error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
+        error_msg = error_msg.format(self.out_fn, frame, pos, channel)
+        print(error_msg)
+      fn = self.acq.files_df.loc[indx_bool,'fn'].values[0]
+      try:
+        img = skimage.io.imread(fn).astype(np.float32)
+      except Exception as error:
+        print('import img error {}'.format(fn))
+        raise error
+      if not sigma is None:
+        img = skimage.filters.gaussian(img, sigma)
+      img = skimage.transform.downscale_local_mean(img, (self.scale, self.scale))
+      return skimage.transform.rotate(img, self.rotation, resize=True)
+
+  def def_load_bg_img(self, frame_ind, pos, channel):
+    return 0
+
+  def load_init_bg_img(self, frame_ind, pos, channel, sigma=15):
+    bg_im = self.load_img(0, pos, channel, sigma)
+    return bg_im
+
+  def load_bg_poslist_img(self, frame_ind, pos, channel, sigma=15):
+    pos_list = self.acq.bg_pos_list
+    im_list = [ self.load_img(frame_ind, bg_pos, channel, sigma) for bg_pos in pos_list ]
+    bg_im = np.median(np.array(im_list), axis=0)
+    return bg_im
+
+  def load_comb_bg_img(self, frame_ind, pos, channel):
+    if frame_ind > 0:
+      im_list = [ fn(frame_ind, pos, channel) for fn in [self.load_init_bg_img, self.load_bg_poslist_img] ]
+      bg_im = np.median(np.array(im_list), axis=0)
+    else:
+      bg_im = self.load_init_bg_img(frame_ind, pos, channel)
+    return bg_im
 
   def get_frame_arr(self, frame_ind):
     h, w = self.one_arr.shape
@@ -676,7 +799,7 @@ class WriteHelper():
         yslice = slice(y0,y0+h)
         xslice = slice(x0,x0+w)
         frame_arr[:] = 0
-        frame_arr += self.load_img(frame_ind, pos, channel)
+        frame_arr += self.load_img(frame_ind, pos, channel) - self.load_bg_img(frame_ind, pos, channel)
         self.pad_arr[yslice,xslice,chan_i] += frame_arr / self.count_arr[yslice, xslice]
 
   def animate(self, frame_ind):
@@ -711,6 +834,13 @@ class WriteHelper():
     ax.set_title(self.out_fn)
     fig.tight_layout()
     return fig, ax
+
+  def write_tiffstack(self, out_fn):
+    self.out_fn = out_fn
+    fig, ax = self.setup_plot()
+    anim = anm.FuncAnimation(fig, self.animate, interval=100, frames=self.frame_vec)
+    plt.close('all')
+    anim.save(out_fn, dpi=80, fps=3, writer=writer)
 
   def save_anim(self, out_fn, writer='ffmpeg'):
     self.out_fn = out_fn
@@ -820,8 +950,14 @@ def write_frame_no_bg(frame_ind, out_fn, pad_ind, files_df, cor_pos_df, pixel_si
     img_arr = np.zeros((pad_h, pad_w, 3))
     im = ax.imshow(img_arr.copy(), animated=True, interpolation='none')
     #     cbar = fig.colorbar(im, ax=ax, ticks=[vmin, vmax])
-    ax.set_xticks([])
-    ax.set_yticks([])
+    xticklabels = np.arange(0, pad_w*pixel_size, 1e3)
+    xticks = xticklabels/pixel_size
+    yticklabels = np.arange(0, pad_h*pixel_size, 1e3)
+    yticks = yticklabels/pixel_size
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(yticklabels)
     ax.set_title("Pad {}".format(pad_ind))
 
     fig.tight_layout()
@@ -899,7 +1035,11 @@ class Acquisition():
             self.im_width = summ_dict['Width']
             self.im_height = summ_dict['Height']
             self.binning = all_metadata['Binning']
-            self.objective = all_metadata['Objectives-State']
+            if dict_key in pad_obj_dict.keys():
+                self.objective = pad_obj_dict[dict_key]
+            else:
+              # self.objective = all_metadata['Objectives-State']
+                self.objective = '5'
             self.pixel_size = pixel_size_table.loc[self.objective, self.binning]
             if dict_key in pad_rotation_dict:
               self.rotation = pad_rotation_dict[dict_key]
@@ -973,7 +1113,7 @@ class Acquisition():
             self.write_movie_no_bg(pad_ind, scale, skip)
 
     def write_frame_no_bg(self, frame_ind, pad_ind, scale=8):
-        out_fn = '{}_{}_pad_{}_frame_{}.avi'.format(self.expname, self.acqname, pad_ind, frame_ind)
+        out_fn = '{}_{}_pad_{}_frame_{}.png'.format(self.expname, self.acqname, pad_ind, frame_ind)
         #out_fn = os.path.join(self.super_dir, out_fn)
         out_fn = os.path.abspath(os.path.join('.','pngs', out_fn))
         print(out_fn)
@@ -990,14 +1130,85 @@ class Acquisition():
         for pad_ind in pad_inds:
             self.write_frame_no_bg(frame_ind, pad_ind, scale)
 
-def get_bg_img(frame, channel, files_df):
-    gb_pad = files_df.groupby(('pad','frame','channel'))
-    gb_pos = files_df.groupby(('pos','frame','channel'))
-    fns = gb_pad.get_group((6,frame,channel)).fn
-    imgs = [skimage.io.imread(fn) for fn in fns]
-    h, w = imgs[0].shape
-    bg_im = np.median(np.concatenate([img.reshape((h, w, 1)) for img in imgs],axis=2),axis=2)
-    return bg_im
+    def write_all_bg(self, frame_ind, pad_ind):
+        bpl = self.bg_pos_list
+        out_fn = 'bg_frame_{}_chan_{}.tif'.format(self.expname, self.acqname, frame_ind, chan_ind)
+        out_fn = os.path.abspath(os.path.join('super_dir','worker_outputs', out_fn))
+        # print(out_fn)
+        gb_fcp = self.files_df.groupby(['frame','channel','pos'])
+        for frame_ind in self.frame_vec:
+          for chan_ind in self.chan_ind_list:
+            #bg_arr = np.empty((len(bpl), type=np.uint16)
+            for i_pos, pos in enumerate(bpl):
+              bg_arr[i_pos,:,:] = skimage.io.imread(gb_fcp.get_group((frame_ind, chan_ind, pos)))
+            bg_img = np.median(bg_arr,axis=0)
+            skimge.io.imsave(out_fn.format(frame_ind, chan_ind), bg_img)
+
+        args = frame_ind, out_fn, pad_ind, self.files_df, self.cor_pos_df, self.pixel_size, scale, self.rotation
+        try:
+            write_frame_no_bg(*args)
+        except FileNotFoundError as err:
+            with open('bad_files.txt','a') as f:
+                f.write(self.super_dir+"\n")
+                print(err)
+
+    def load_img(self, frame, pos, channel, scale=1):
+      frame_bool = self.files_df.frame==frame
+      pos_bool = self.files_df.pos==pos
+      chan_bool = self.files_df.channel == channel
+      indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
+      if sum(indx_bool) < 1:
+        return skimage.transform.rotate(np.zeros((self.h,self.w),dtype=np.float32), self.rotation)
+        error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
+        error_msg = error_msg.format(self.out_fn, frame, pos, channel)
+        print(error_msg)
+      fn = self.files_df.loc[indx_bool,'fn'].values[0]
+      try:
+        img = skimage.io.imread(fn).astype(np.float32)
+      except Exception as error:
+        print('import img error {}'.format(fn))
+        raise error
+      img = skimage.transform.downscale_local_mean(img, (self.scale, self.scale))
+      return skimage.transform.rotate(img, self.rotation, resize=True)
+
+
+class ProcessPad():
+  '''
+  Processor class uses WriteHelper to grab bg-subtracted frames
+  '''
+  def __init__(self, acq, pad_ind, scale):
+    self.acq = acq
+    self.pad_ind = pad_ind
+    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option='comb')
+    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel','scale']
+    self.out_df = pd.DataFrame(columns=columns)
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
+    self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
+    self.thresh_min = 40
+
+  def process_frame(self, frame):
+    acq, pad_helper = self.acq, self.pad_helper
+    pad_helper.get_frame_arr(frame)
+    pad_arr = pad_helper.pad_arr
+    for c_i in np.arange(acq.n_chan):
+        chan_arr = pad_arr[:,:,c_i]
+        thresh = skimage.filters.threshold_li(chan_arr)
+        thresh = np.max([self.thresh_min, thresh])
+        thresh_arr = chan_arr > thresh
+        n_thresh = np.sum(thresh_arr)
+        if n_thresh > 0 :
+            ones_vec = np.ones(n_thresh)
+            x_vec = x_arr[thresh_arr].flatten()
+            y_vec = y_arr[thresh_arr].flatten()
+            fluor_vec = chan_arr[thresh_arr].flatten()
+            frame_vec = frame*ones_vec
+            chan_vec = acq.chan_ind_list[c_i]*ones_vec
+            pad_vec = pad_ind*ones_vec
+            scale_vec = scale*ones_vec
+            data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec]
+            update_df = pd.DataFrame(dict(zip(columns, data_cols)))
+            out_df = pd.concat([out_df, update_df])
 
 def label_helper(im_arr, bg_im_arr):
     uint_max = 65535
