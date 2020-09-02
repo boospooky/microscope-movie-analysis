@@ -7,7 +7,6 @@
 
 # OVERVIEW
 # Module variables
-# 
 # Functions
 
 # Classes
@@ -35,6 +34,7 @@ rc={'lines.linewidth': 2, 'axes.labelsize': 14, 'axes.titlesize': 14}
 sns.set(rc=rc)
 
 from scipy import ndimage as ndi
+from scipy import signal
 import scipy as scp
 import pandas as pd
 
@@ -48,13 +48,7 @@ from PIL import Image, UnidentifiedImageError
 import skimage.filters
 import skimage.io
 import skimage.morphology
-import skimage.feature
-import skimage.exposure
-
-from skimage import data, color
-from skimage.transform import hough_circle, hough_circle_peaks
-from skimage.draw import circle_perimeter
-from skimage.util import img_as_ubyte
+import skimage.external.tifffile
 
 # Channel information for IX81 inverted microscope
 all_channel_inds = [str(xx) for xx in range(6)]
@@ -71,6 +65,8 @@ binning_index = pd.Index(np.array(['1x1','2x2','4x4']),name='binning')
 pixel_size_table = pd.DataFrame(index=objective_index, columns=binning_index, data=rel_len_arr*2.585)
 
 # manual metadata
+pad_bg_pos_lists = {'200626_finalday/img_1':(25,)}
+
 pad_metadata_dict = {'180312_full_circuit_w_senders/20180302_2':((0,1,2)),
 '180313_full_circuit_w_senders/20180313_1':((0,3,6),(1,4,7),(2,5,8)),
 '180314_full_circuit_w_senders/20180314_1':(np.arange(0,3),np.arange(3,6),np.arange(6,9)),
@@ -162,7 +158,6 @@ pad_obj_dict = {'180312_full_circuit_w_senders/20180302_2':'1',
 '180320/180320_fullcircuit_longpads_1':'1',
 '180601/180601_1':'5',
 '180711/20180711_1':'5',
-#'180822_movie/20180822_1':True,
 '181222_movie/20181222_1':'5',
 '190126_rhl_strain_6/20190126_2':'5',
 '190126_rhl_strain_6/20190126_4':'5',
@@ -475,25 +470,6 @@ def make_files_df(super_dir, overwrite=False):
       for colname, colvec in zip(colnames, [pad_vec, padcol_vec, padrow_vec]):
         files_df.loc[indx_vec, colname] = colvec
 
-    # Each frame should be associated with the same number of images. 
-    # If this is not the case, the acquisition was aborted.
-    # Remove rows corresponding to the frames with too few images
-#    gb_frame = files_df.groupby('frame')
-#    imgs_per_frame = files_df[['frame','fn']].groupby('frame').agg(len)
-#    max_ipf = imgs_per_frame['fn'].max()
-#    short_frames = imgs_per_frame.index[imgs_per_frame.fn < max_ipf]
-#    for frame_i in short_frames:
-#        drop_inds = gb_frame.get_group(frame_i).index
-#        files_df.drop(drop_inds, axis=0, inplace=True)
-#        gb_frame = files_df.groupby('frame')
-#    files_df = files_df.reindex()
-#    n_files = len(files_df)
-#    # pad indices inferred from file paths may not be contiguous
-#    # replace with order vector to ensure 0-indexed pads
-#    gb_pad = files_df.groupby('pad')
-#    for i, inds in enumerate(gb_pad.groups.values()):
-#        files_df.loc[inds,'pad'] = i
-
     # Assign integer values to each position. If any are missed, throw exception
     gb_pos = files_df.groupby(['posname'])
     for i, inds in enumerate(gb_pos.groups.values()):
@@ -567,7 +543,7 @@ def make_positions_df(files_df):
         cor_pos_df.loc[pos,['x', 'y', 'label', 'pad']] = [x, y, label, pad]
     return cor_pos_df
 
-def plot_positions(cor_pos_df, out_fn):
+def plot_positions(cor_pos_df):
     plt.figure(figsize=(18,18))
     n_pads = len(cor_pos_df.groupby('pad'))
     colors = sns.color_palette('Set1', n_colors=n_pads)
@@ -587,112 +563,7 @@ def plot_positions(cor_pos_df, out_fn):
     handles = [Line2D([0],[0],color=colors[xx],marker='o',label=xx) for xx in np.arange(n_pads)]
     plt.legend(handles=handles)
     plt.gca().set_aspect('equal')
-    plt.savefig(out_fn)
-    plt.close('all')
-
-def write_movie_no_bg(out_fn, pad_ind, files_df, cor_pos_df, pixel_size, scale=4, rotation=180):
-    # Get movie metadata
-    n_chan, chan_ind_list, chan_names, im_width, im_height = get_exp_summary_from_fn(files_df.fn.values[0])
-    n_frames = files_df.frame.max()+1
-    frame_vec = np.sort(np.unique(files_df.frame.values))
-    pixel_size = pixel_size * scale
-    h, w = im_height//scale, im_width//scale
-    uint_max = 65535
-    # Setup plotting variables
-    plt.close('all')
-    pad_df = cor_pos_df.loc[cor_pos_df.pad==pad_ind,:]
-    pos_list = np.unique(pad_df.index.values)
-    xlims = np.array([pad_df.x.min(), pad_df.x.max()])/pixel_size + w*np.array([-0.25,1.25])
-    ylims = np.array([pad_df.y.min(), pad_df.y.max()])/pixel_size + h*np.array([-0.25,1.25])
-    rel_mins = np.concatenate([[xlims], [ylims]],axis=0).astype(np.int)
-    pad_h = np.int(np.ceil(np.diff(ylims)))
-    pad_w = np.int(np.ceil(np.diff(xlims)))
-    fig_h, fig_w = np.array([pad_h, pad_w])/(100/scale)
-    while fig_h > 4e3 or fig_w > 4e3:
-        fig_h, fig_w = np.array([fig_h, fig_w])/10
-    # Define helper functions
-    def load_img(frame, pos, channel, rotation=rotation, scale=scale):
-        frame_bool = files_df.frame==frame
-        pos_bool = files_df.pos==pos
-        chan_bool = files_df.channel==channel
-        indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
-        if sum(indx_bool) < 1:
-            return skimage.transform.rotate(np.zeros((h,w),dtype=np.float32),rotation)
-            error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
-            error_msg = error_msg.format(out_fn, pad_ind, frame, pos, channel)
-            print(error_msg)
-        fn = files_df.loc[indx_bool,'fn'].values[0]
-        try:
-            img = skimage.io.imread(fn).astype(np.float32)
-        except ValueError as error:
-            msg = 'skimage img read error {}'.format(fn)
-            print(msg)
-            debug_log(error, msg)
-            return skimage.transform.rotate(np.zeros((h,w), dtype=np.float32),rotation)
-        # img = skimage.filters.gaussian(img, sigma)
-        img = skimage.transform.downscale_local_mean(img, (scale, scale))
-        return skimage.transform.rotate(img, rotation)
-
-    pad_arr = np.zeros((pad_h, pad_w, n_chan), dtype=np.float32)
-    chan_vec = np.array(chan_ind_list)
-    pos_lims = (pad_df[['x','y']]/pixel_size).astype(np.int)
-    count_arr = np.zeros((pad_h, pad_w), dtype=np.float32)
-    img_arr = skimage.transform.rotate(np.ones((h,w),np.float32),rotation)
-    for pos in pos_list:
-        x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
-        count_arr[y0:y0+h,x0:x0+w] += img_arr
-    uncovered_arr = count_arr<=0
-    covered_arr = count_arr>0
-    count_arr[count_arr<=0] = 1
-
-    def get_frame_arr(frame_ind):
-        im_arr = np.zeros((h,w),dtype=np.float32)
-        for chan_i, channel in enumerate(chan_vec):
-            for pos in pos_list:
-                x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
-                count_portion = count_arr[y0:y0+h,x0:x0+w]
-                im_arr[:] = 0
-                im_arr += load_img(frame_ind, pos, channel) #- load_img(0, pos, channel)
-                pad_arr[y0:y0+h,x0:x0+w,chan_i] += im_arr # - bg_arr
-            pad_arr[:,:,chan_i] /= count_arr
-
-    def animate(i):
-        img_arr = np.zeros((pad_h, pad_w, 3), dtype=np.float32)
-        pad_arr[:] = 0
-        get_frame_arr(i)
-        # For no-bg gifs, normalize relative to the middle frame.
-        # Use contrast-stretching approach, where the bounds are the middle 90 percentile
-        norm_vec = []
-        for chan_ind in np.arange(n_chan):
-            frame_vals = pad_arr[:,:,chan_ind][covered_arr].flatten()
-            frame_vals = np.sort(frame_vals)
-            frame_n = len(frame_vals)
-            ind_min, ind_max = np.array([0.05*frame_n, 0.95*frame_n],dtype=np.int)
-            vmin, vmax = frame_vals[ind_min], frame_vals[ind_max]
-            vmax = np.max([vmax+vmin,vmin*2])
-            norm_fn = mpl_colors.Normalize(vmin, vmax, clip=True)
-            norm_vec.append(norm_fn)
-        for chan_ind, chan_slot in enumerate(chan_vec):
-            norm = norm_vec[chan_ind]
-            chan_arr = pad_arr[:,:,chan_ind:chan_ind+1]
-            color_vec = mpl_colors.to_rgb(mpl_named_colors[chan_slot])
-            img_arr += np.concatenate([norm(chan_arr)*color_val for color_val in color_vec],axis=2)
-        norm_fn = mpl_colors.Normalize(0, 1, clip=True)
-        im.set_array(norm_fn(img_arr))
-
-    fig, ax = plt.subplots(1, 1, figsize=(fig_w,fig_h+1.2))
-    img_arr = np.zeros((pad_h, pad_w, 3),dtype=np.float32)
-    im = ax.imshow(img_arr.copy(), animated=True, interpolation='none')
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_title("Pad {}".format(pad_ind))
-
-    fig.tight_layout()
-
-    # animate(frame_ind)
-    anim = anm.FuncAnimation(fig, animate, interval=100, frames=frame_vec)
-    plt.close('all')
-    anim.save(out_fn, dpi=80, fps=3, writer='pillow')
+    return plt.gcf()
 
 class WriteHelper():
   def _set_scale(self, scale):
@@ -705,28 +576,36 @@ class WriteHelper():
     self.one_arr = skimage.transform.rotate(np.ones((h,w)),self.rotation,resize=True)
     h, w = self.one_arr.shape
     pos_lims = (pad_df[['x','y']]/pixel_size).astype(np.int)
-    xlims = np.array([pad_df.x.min(), pad_df.x.max()])/pixel_size + w*np.array([-0.25,1.25])
-    ylims = np.array([pad_df.y.min(), pad_df.y.max()])/pixel_size + h*np.array([-0.25,1.25])
+    xlims = np.array([pad_df.x.min(), pad_df.x.max()])/pixel_size + w*np.array([0,1])
+    ylims = np.array([pad_df.y.min(), pad_df.y.max()])/pixel_size + h*np.array([0,1])
     rel_mins = np.concatenate([[xlims], [ylims]],axis=0).astype(np.int)
     pad_h = np.int(np.ceil(np.diff(ylims)))
     pad_w = np.int(np.ceil(np.diff(xlims)))
-    fig_h, fig_w = np.array([pad_h, pad_w])/(1000/scale)
-    while fig_h > 1e4 or fig_w > 1e4:
-        fig_h, fig_w = np.array([fig_h, fig_w])/10
+
+    # Scale such that figure fits in bounding box 20x20
+    max_dim = np.max([pad_h, pad_w])
+    fig_factor = self.fig_dim/max_dim
+    fig_h, fig_w = np.array([pad_h, pad_w])*fig_factor
+
     count_arr = np.zeros((pad_h, pad_w),dtype=np.float32)
     pos_list = self.pad_df.index
     for pos in pos_list:
         x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
         count_arr[y0:y0+h,x0:x0+w] += self.one_arr
     self.count_arr,self.uncovered_arr,self.covered_arr = count_arr,count_arr<=0,count_arr>0
-    self.count_arr[self.count_arr<=0] = 1
+    self.count_arr[self.uncovered_arr] = 1
     self.h, self.w = h, w
     self.fig_h, self.fig_w = fig_h, fig_w
     self.pixel_size = pixel_size
     self.rel_mins,self.pos_list,self.pos_lims = rel_mins,pos_list,pos_lims
-    self.pad_arr, self.img_arr = np.zeros((pad_h, pad_w, self.acq.n_chan),dtype=np.float32), np.zeros((pad_h, pad_w, 3),dtype=np.float32)
+    self.pad_arr = np.zeros((pad_h, pad_w, self.acq.n_chan),dtype=np.float32)
+    self.img_arr = np.zeros((pad_h, pad_w, 3),dtype=np.float32)
+    self.norm_arr = np.zeros((pad_h, pad_w, 3),dtype=np.uint8)
 
-  def __init__(self, acq, scale=8, pad_ind=None, bg_option='default'):
+  def __init__(self, acq, scale=8, pad_ind=None, bg_option='default', sigma=None, bg_sigma=None):
+    self.fig_dim = 20
+    self.sigma = sigma
+    self.bg_sigma = bg_sigma
     if pad_ind is None:
       pad_ind = 0
 
@@ -747,47 +626,34 @@ class WriteHelper():
     self.scale,self.rotation = scale,acq.rotation
     self._set_scale(scale)
 
-  def load_img(self, frame, pos, channel, sigma=None):
-      frame_bool = self.acq.files_df.frame==frame
-      pos_bool = self.acq.files_df.pos==pos
-      chan_bool = self.acq.files_df.channel == channel
-      indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
-      if sum(indx_bool) < 1:
-        return skimage.transform.rotate(np.zeros((self.h,self.w),dtype=np.float32), self.rotation, resize=True)
-        error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
-        error_msg = error_msg.format(self.out_fn, frame, pos, channel)
-        print(error_msg)
-      fn = self.acq.files_df.loc[indx_bool,'fn'].values[0]
-      try:
-        img = skimage.io.imread(fn).astype(np.float32)
-      except Exception as error:
-        print('import img error {}'.format(fn))
-        raise error
-      if not sigma is None:
-        img = skimage.filters.gaussian(img, sigma)
-      img = skimage.transform.downscale_local_mean(img, (self.scale, self.scale))
-      return skimage.transform.rotate(img, self.rotation, resize=True)
-
   def def_load_bg_img(self, frame_ind, pos, channel):
     return 0
 
-  def load_init_bg_img(self, frame_ind, pos, channel, sigma=15):
-    bg_im = self.load_img(0, pos, channel, sigma)
+  def load_init_bg_img(self, frame_ind, pos, channel):
+    bg_im = self.acq.load_img(0, pos, channel, self.scale, self.bg_sigma)
     return bg_im
 
-  def load_bg_poslist_img(self, frame_ind, pos, channel, sigma=15):
+  def load_bg_poslist_img(self, frame_ind, pos, channel):
     pos_list = self.acq.bg_pos_list
-    im_list = [ self.load_img(frame_ind, bg_pos, channel, sigma) for bg_pos in pos_list ]
-    bg_im = np.median(np.array(im_list), axis=0)
+    im_list = [ self.acq.load_img(frame_ind, bg_pos, channel, self.scale, self.bg_sigma) for bg_pos in pos_list ]
+    #bg_im = np.median(np.array(im_list), axis=0)
+    bg_im = np.mean(np.array(im_list), axis=0)
     return bg_im
 
   def load_comb_bg_img(self, frame_ind, pos, channel):
     if frame_ind > 0:
       im_list = [ fn(frame_ind, pos, channel) for fn in [self.load_init_bg_img, self.load_bg_poslist_img] ]
-      bg_im = np.median(np.array(im_list), axis=0)
+      #bg_im = np.median(np.array(im_list), axis=0)
+      bg_im = np.mean(np.array(im_list), axis=0)
     else:
       bg_im = self.load_init_bg_img(frame_ind, pos, channel)
     return bg_im
+
+  def get_bgsub_arr(self, frame, pos, channel):
+    # frame_arr = np.zeros((h, w), dtype=np.float32)
+    frame_arr = self.acq.load_img(frame, pos, channel, scale=self.scale, sigma=self.sigma)
+    frame_arr -= self.load_bg_img(frame, pos, channel)
+    return frame_arr
 
   def get_frame_arr(self, frame_ind):
     h, w = self.one_arr.shape
@@ -798,22 +664,21 @@ class WriteHelper():
         x0, y0 = (self.pos_lims.loc[pos,:].values - self.rel_mins[:,0]).astype(np.int)
         yslice = slice(y0,y0+h)
         xslice = slice(x0,x0+w)
-        frame_arr[:] = 0
-        frame_arr += self.load_img(frame_ind, pos, channel) - self.load_bg_img(frame_ind, pos, channel)
+        frame_arr[:] = self.get_bgsub_arr(frame_ind, pos, channel)
         self.pad_arr[yslice,xslice,chan_i] += frame_arr / self.count_arr[yslice, xslice]
 
-  def animate(self, frame_ind):
+  def _prep_img_arr(self):
     pad_h, pad_w = self.pad_arr.shape[:2]
     self.img_arr[:] = 0
-    self.get_frame_arr(frame_ind)
     # Use contrast-stretching approach, where the bounds are the middle 90 percentile
     norm_vec = []
-    for chan_ind in np.arange(self.n_chan):
+    for chan_ind in np.arange(self.acq.n_chan):
       frame_vals = self.pad_arr[:,:,chan_ind][self.covered_arr].flatten()
-      frame_vals = np.sort(frame_vals)
+      frame_vals = np.sort(np.unique(frame_vals))
       n_vals = len(frame_vals)
-      ind_min, ind_max = np.array([0.05*n_vals, 0.95*n_vals],dtype=np.int)
+      ind_min, ind_max = np.array([0.1*n_vals, 1*n_vals-1],dtype=np.int)
       vmin, vmax = frame_vals[ind_min], frame_vals[ind_max]
+      vmin = np.max([20,vmin])
       vmax = np.max([vmax+vmin,vmin*2])
       norm_fn = mpl_colors.Normalize(vmin, vmax, clip=True)
       norm_vec.append(norm_fn)
@@ -822,9 +687,18 @@ class WriteHelper():
       chan_arr = self.pad_arr[:,:,chan_ind:chan_ind+1]
       color_vec = mpl_colors.to_rgb(mpl_named_colors[chan_slot])
       self.img_arr += np.concatenate([norm(chan_arr)*color_val for color_val in color_vec],axis=2)
+
+  def _prep_norm_arr(self):
     norm_fn = mpl_colors.Normalize(0, 1, clip=True)
-    normed_arr = (255*norm_fn(self.img_arr)).astype(np.uint8)
-    self.im.set_array(normed_arr)
+    self.norm_arr[:,:,:] = (255*norm_fn(self.img_arr)).astype(np.uint8)
+
+  def animate(self, frame_ind):
+    pad_h, pad_w = self.pad_arr.shape[:2]
+    self.img_arr[:] = 0
+    self.get_frame_arr(frame_ind)
+    self._prep_img_arr()
+    self._prep_norm_arr()
+    self.im.set_array(self.norm_arr)
 
   def setup_plot(self):
     fig, ax = plt.subplots(1, 1, figsize=(self.fig_w, self.fig_h+1.2))
@@ -835,134 +709,19 @@ class WriteHelper():
     fig.tight_layout()
     return fig, ax
 
-  def write_tiffstack(self, out_fn):
+  def save_anim(self, out_fn, writer='ffmpeg', anim_fn=None):
+    if anim_fn is None:
+      anim_fn = self.animate
     self.out_fn = out_fn
     fig, ax = self.setup_plot()
-    anim = anm.FuncAnimation(fig, self.animate, interval=100, frames=self.frame_vec)
+    anim = anm.FuncAnimation(fig, anim_fn, interval=100, frames=self.frame_vec)
     plt.close('all')
     anim.save(out_fn, dpi=80, fps=3, writer=writer)
 
-  def save_anim(self, out_fn, writer='ffmpeg'):
-    self.out_fn = out_fn
-    fig, ax = self.setup_plot()
-    anim = anm.FuncAnimation(fig, self.animate, interval=100, frames=self.frame_vec)
-    plt.close('all')
-    anim.save(out_fn, dpi=80, fps=3, writer=writer)
-
-  def save_frame(self, out_fn, frame_ind, writer):
+  def save_frame(self, out_fn, frame_ind):
     self.out_fn = out_fn
     fig, ax = self.setup_plot()
     self.animate(frame_ind)
-    fig.savefig(out_fn)
-    plt.close('all')
-
-def write_frame_no_bg(frame_ind, out_fn, pad_ind, files_df, cor_pos_df, pixel_size, scale=4, rotation=180):
-    # Get movie metadata
-    n_chan, chan_ind_list, chan_names, im_width, im_height = get_exp_summary_from_fn(files_df.fn.values[0])
-    n_frames = files_df.frame.max()+1
-    pixel_size = pixel_size * scale
-    h, w = im_height//scale, im_width//scale
-    uint_max = 65535
-    # Setup plotting variables
-    plt.close('all')
-    pad_df = cor_pos_df.loc[cor_pos_df.pad==pad_ind,:]
-    pos_list = np.unique(pad_df.index.values)
-    xlims = np.array([pad_df.x.min(), pad_df.x.max()])/pixel_size + w*np.array([-0.25,1.25])
-    ylims = np.array([pad_df.y.min(), pad_df.y.max()])/pixel_size + h*np.array([-0.25,1.25])
-    rel_mins = np.concatenate([[xlims], [ylims]],axis=0).astype(np.int)
-    pad_h = np.int(np.ceil(np.diff(ylims)))
-    pad_w = np.int(np.ceil(np.diff(xlims)))
-    fig_h, fig_w = np.array([pad_h, pad_w])/(1000/scale)
-    while fig_h > 1e4 or fig_w > 1e4:
-        fig_h, fig_w = np.array([fig_h, fig_w])/10
-    # Define helper functions
-    def load_img(frame, pos, channel, rotation=rotation, scale=scale, sigma=3):
-        frame_bool = files_df.frame==frame
-        pos_bool = files_df.pos==pos
-        chan_bool = files_df.channel == channel
-        indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
-        if sum(indx_bool) < 1:
-            return skimage.transform.rotate(np.zeros((h,w)),rotation)
-            error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
-            error_msg = error_msg.format(out_fn, pad_ind, frame, pos, channel)
-            print(error_msg)
-        fn = files_df.loc[indx_bool,'fn'].values[0]
-        try:
-            img = skimage.filters.gaussian(skimage.io.imread(fn).astype(np.float), sigma)
-        except Exception as error:
-            print('import img error {}'.format(fn))
-            raise error
-        img = skimage.transform.downscale_local_mean(img, (scale, scale))
-        return skimage.transform.rotate(img, rotation)
-
-    pad_arr = np.zeros((pad_h, pad_w, n_chan))
-    chan_vec = np.array(chan_ind_list)
-    pos_lims = (pad_df[['x','y']]/pixel_size).astype(np.int)
-    count_arr = np.zeros((pad_h, pad_w))
-    img_arr = skimage.transform.rotate(np.ones((h,w)),rotation)
-    for pos in pos_list:
-        x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
-        count_arr[y0:y0+h,x0:x0+w] += img_arr
-    uncovered_arr = count_arr<=0
-    covered_arr = count_arr>0
-    count_arr[count_arr<=0] = 1
-
-    def get_frame_arr(frame_ind):
-        # bg_arr = np.zeros((h,w))
-        im_arr = np.zeros((h,w))
-        # get background image
-        # bg_pos_list = [83,89,95,101,107]
-        # n_bg = len(bg_pos_list)
-        for chan_i, channel in enumerate(chan_vec):
-            # bg_arr[:] = 0
-            # bg_arr += np.mean([load_img(frame_ind, pos, channel) for pos in bg_pos_list], axis=0)
-            for pos in pos_list:
-                x0, y0 = (pos_lims.loc[pos,:].values - rel_mins[:,0]).astype(np.int)
-                im_arr[:] = 0
-                im_arr += load_img(frame_ind, pos, channel)
-                pad_arr[y0:y0+h,x0:x0+w,chan_i] += im_arr # - bg_arr
-            pad_arr[:,:,chan_i] /= count_arr
-
-    def animate(i):
-        img_arr = np.zeros((pad_h, pad_w, 3))
-        pad_arr[:] = 0
-        get_frame_arr(i)
-        # For no-bg gifs, normalize relative to the middle frame.
-        # Use contrast-stretching approach, where the bounds are the middle 90 percentile
-        norm_vec = []
-        for chan_ind in np.arange(n_chan):
-            frame_vals = pad_arr[:,:,chan_ind][covered_arr].flatten()
-            frame_vals = np.sort(frame_vals)
-            frame_n = len(frame_vals)
-            ind_min, ind_max = np.array([0.05*frame_n, 0.95*frame_n],dtype=np.int)
-            vmin, vmax = frame_vals[ind_min], frame_vals[ind_max]
-            vmax = np.max([vmax+vmin,vmin*2])
-            norm_fn = mpl_colors.Normalize(vmin, vmax, clip=True)
-            norm_vec.append(norm_fn)
-        for chan_ind, chan_slot in enumerate(chan_vec):
-            norm = norm_vec[chan_ind]
-            chan_arr = pad_arr[:,:,chan_ind:chan_ind+1]
-            color_vec = mpl_colors.to_rgb(mpl_named_colors[chan_slot])
-            img_arr += np.concatenate([norm(chan_arr)*color_val for color_val in color_vec],axis=2)
-        im.set_array(img_arr)
-
-    fig, ax = plt.subplots(1, 1, figsize=(fig_w,fig_h+1.2))
-    img_arr = np.zeros((pad_h, pad_w, 3))
-    im = ax.imshow(img_arr.copy(), animated=True, interpolation='none')
-    #     cbar = fig.colorbar(im, ax=ax, ticks=[vmin, vmax])
-    xticklabels = np.arange(0, pad_w*pixel_size, 1e3)
-    xticks = xticklabels/pixel_size
-    yticklabels = np.arange(0, pad_h*pixel_size, 1e3)
-    yticks = yticklabels/pixel_size
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(xticklabels)
-    ax.set_yticks(yticks)
-    ax.set_yticklabels(yticklabels)
-    ax.set_title("Pad {}".format(pad_ind))
-
-    fig.tight_layout()
-
-    animate(frame_ind)
     fig.savefig(out_fn)
     plt.close('all')
 
@@ -984,6 +743,8 @@ class Acquisition():
             with open('debug.log','a') as f:
                 f.write(time.asctime()+"\n")
                 f.write('end {} debug \n'.format(in_str))
+#        tiff_fn = os.path.abspath(os.path.join(super_dir, 'arr.tiff'))
+#        self.tiff_fn = tiff_fn
 
     def _init_dir(self, super_dir, overwrite_files_df=False, overwrite_cor_pos_df=False, overwrite_time_df=False):
         self.super_dir = os.path.abspath(super_dir)
@@ -1026,6 +787,10 @@ class Acquisition():
                 self.magoption16 = pad_mag_dict[dict_key]
             else:
                 self.magoption16 = False
+            if dict_key in pad_bg_pos_lists.keys():
+                self.bg_pos_list = pad_bg_pos_lists[dict_key]
+            else:
+                self.bg_pos_list = None
             fn = self.files_df.fn.values[0]
             all_metadata = fn_metadata_full(fn)
             summ_dict = all_metadata['Summary']
@@ -1072,16 +837,43 @@ class Acquisition():
             out_fn = '{}_{}_cor_pos.png'.format(self.expname, self.acqname)
             out_fn = os.path.abspath(os.path.join('.','pngs', out_fn))
         print(out_fn)
-        plot_positions(self.cor_pos_df, out_fn)
+        fig = plot_positions(self.cor_pos_df)
+        plt.savefig(out_fn)
+        plt.close('all')
 
-    def _prep_writehelper(self, ):
+    def load_img(self, frame, pos, channel, scale=1, sigma=None):
+        pad = self.cor_pos_df.loc[pos,'pad']
+        frame_bool = self.files_df.frame==frame
+        pos_bool = self.files_df.pos==pos
+        chan_bool = self.files_df.channel == channel
+        indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
+        h, w = self.im_height, self.im_width
+        if sum(indx_bool) < 1:
+          error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
+          error_msg = error_msg.format(self.expname, pad, frame, pos, channel)
+          print(error_msg)
+          img = np.zeros((h,w),dtype=np.float32)
+          img = skimage.transform.downscale_local_mean(img, (scale, scale))
+          return skimage.transform.rotate(img, self.rotation, resize=True)
+        fn = self.files_df.loc[indx_bool,'fn'].values[0]
+        try:
+          img = skimage.io.imread(fn).astype(np.float32)
+        except Exception as error:
+          print('import img error {}'.format(fn))
+          raise error
+        if not (sigma is None):
+          img = skimage.filters.gaussian(img, sigma, preserve_range=True)
+        img = skimage.transform.downscale_local_mean(img, (scale, scale))
+        return skimage.transform.rotate(img, self.rotation, resize=True)
+
+    def _prep_writehelper(self, pad_ind, scale):
         args = pad_ind, self.files_df, self.cor_pos_df, self.pixel_size, scale, self.rotation
 
-    def write_movie_class(self, pad_ind, scale=8, skip=1):
-        out_fn = '{}_{}_pad_{}.gif'.format(self.expname, self.acqname, pad_ind)
+    def write_movie(self, out_fn, pad_ind, scale=8, skip=1, bg_option='default'):
+        #out_fn = '{}_{}_pad_{}.gif'.format(self.expname, self.acqname, pad_ind)
         # out_fn = os.path.join(self.super_dir, out_fn)
-        out_fn = os.path.abspath(os.path.join('.','anims', out_fn))
-        args = out_fn, pad_ind, self.files_df, self.cor_pos_df, self.pixel_size, scale, self.rotation
+        #out_fn = os.path.abspath(os.path.join('.','anims', out_fn))
+        args = acq, scale, pad_ind, bg_option
         try:
             self.writer_obj = WriteHelper(*args)
             self.writer_obj.save_anim(out_fn, 'pillow')
@@ -1090,45 +882,33 @@ class Acquisition():
                 f.write(self.super_dir+"\n")
                 print(err)
 
-    def write_all_pad_gifs_class(self, scale=8, skip=1):
+    def write_all_pad_gifs(self, out_fn, scale=8, skip=1, bg_option='default'):
+        out_tmpl = '{}_{}_pad_{}.gif'
+        out_tmpl = os.path.abspath(os.path.join('.','anims', out_tmpl))
         pad_inds = np.unique(self.files_df.pad.values)
         for pad_ind in pad_inds:
-            self.write_movie_class(pad_ind, scale, skip)
+            out_fn = out_tmpl.format(self.expname, self.acqname, pad_ind)
+            self.write_movie(out_fn, pad_ind, scale, skip, bg_option)
 
-    def write_movie_no_bg(self, pad_ind, scale=8, skip=1):
-        out_fn = '{}_{}_pad_{}.gif'.format(self.expname, self.acqname, pad_ind)
-        # out_fn = os.path.join(self.super_dir, out_fn)
-        out_fn = os.path.abspath(os.path.join('.','anims', out_fn))
-        args = out_fn, pad_ind, self.files_df, self.cor_pos_df, self.pixel_size, scale, self.rotation
-        try:
-            write_movie_no_bg(*args)
-        except FileNotFoundError as err:
-            with open('bad_files.txt','a') as f:
-                f.write(self.super_dir+"\n")
-                print(err)
-
-    def write_all_pad_gifs_no_bg(self, scale=8, skip=1):
-        pad_inds = np.unique(self.files_df.pad.values)
-        for pad_ind in pad_inds:
-            self.write_movie_no_bg(pad_ind, scale, skip)
-
-    def write_frame_no_bg(self, frame_ind, pad_ind, scale=8):
+    def write_frame(self, frame_ind, pad_ind, scale=8, bg_option='default'):
         out_fn = '{}_{}_pad_{}_frame_{}.png'.format(self.expname, self.acqname, pad_ind, frame_ind)
-        #out_fn = os.path.join(self.super_dir, out_fn)
         out_fn = os.path.abspath(os.path.join('.','pngs', out_fn))
         print(out_fn)
-        args = frame_ind, out_fn, pad_ind, self.files_df, self.cor_pos_df, self.pixel_size, scale, self.rotation
+        args = acq, scale, pad_ind, bg_option
         try:
-            write_frame_no_bg(*args)
+          if self.bg_pos_list is None and bg_option!='default':
+            bg_option = 'default'
+          self.writer_obj = WriteHelper(*args)
+          self.writer_obj.save_frame(out_fn, frame_ind)
         except FileNotFoundError as err:
             with open('bad_files.txt','a') as f:
-                f.write(self.super_dir+"\n")
+                f.write(self.super_dir+" failed write_frame\n")
                 print(err)
 
-    def write_all_pad_frame_no_bg(self, frame_ind, scale=8):
+    def write_all_pad_frame(self, frame_ind, scale=8, bg_option='default'):
         pad_inds = np.unique(self.files_df.pad.values)
         for pad_ind in pad_inds:
-            self.write_frame_no_bg(frame_ind, pad_ind, scale)
+            self.write_frame(frame_ind, pad_ind, scale, bg_option='default')
 
     def write_all_bg(self, frame_ind, pad_ind):
         bpl = self.bg_pos_list
@@ -1152,130 +932,506 @@ class Acquisition():
                 f.write(self.super_dir+"\n")
                 print(err)
 
-    def load_img(self, frame, pos, channel, scale=1):
-      frame_bool = self.files_df.frame==frame
-      pos_bool = self.files_df.pos==pos
-      chan_bool = self.files_df.channel == channel
-      indx_bool = (frame_bool)&(pos_bool)&(chan_bool)
-      if sum(indx_bool) < 1:
-        return skimage.transform.rotate(np.zeros((self.h,self.w),dtype=np.float32), self.rotation)
-        error_msg = 'Image not found when printing {}: pad:{} frame:{} pos:{} channel:{}'
-        error_msg = error_msg.format(self.out_fn, frame, pos, channel)
-        print(error_msg)
-      fn = self.files_df.loc[indx_bool,'fn'].values[0]
-      try:
-        img = skimage.io.imread(fn).astype(np.float32)
-      except Exception as error:
-        print('import img error {}'.format(fn))
-        raise error
-      img = skimage.transform.downscale_local_mean(img, (self.scale, self.scale))
-      return skimage.transform.rotate(img, self.rotation, resize=True)
-
+    def write_tiff_stack(self):
+      tiff_tmpl = os.path.join('central','scratchio','jparkin','{}', '{}.tiff')
 
 class ProcessPad():
   '''
+  Create dataframe of background-subtracted experimental data from one pad.
+
   Processor class uses WriteHelper to grab bg-subtracted frames
   '''
   def __init__(self, acq, pad_ind, scale):
     self.acq = acq
     self.pad_ind = pad_ind
+    self.scale = scale
     self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option='comb')
-    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel','scale']
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel','scale']
     self.out_df = pd.DataFrame(columns=columns)
     ny, nx, nc = self.pad_helper.pad_arr.shape
     self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
     self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
-    self.thresh_min = 40
+    thresh_mins = [200, 200, 1e3]
+    self.thresh_dict = dict(zip([2,3,5],thresh_mins))
 
   def process_frame(self, frame):
     acq, pad_helper = self.acq, self.pad_helper
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh']
+    out_df = pd.DataFrame(columns=columns, dtype=np.float)
     pad_helper.get_frame_arr(frame)
     pad_arr = pad_helper.pad_arr
     for c_i in np.arange(acq.n_chan):
         chan_arr = pad_arr[:,:,c_i]
         thresh = skimage.filters.threshold_li(chan_arr)
-        thresh = np.max([self.thresh_min, thresh])
+        thresh_min = self.thresh_dict[acq.chan_ind_list[c_i]]
+        thresh = np.max([thresh_min, thresh])
         thresh_arr = chan_arr > thresh
+        thresh_arr = skimage.morphology.remove_small_objects(thresh_arr, 50)
         n_thresh = np.sum(thresh_arr)
         if n_thresh > 0 :
             ones_vec = np.ones(n_thresh)
-            x_vec = x_arr[thresh_arr].flatten()
-            y_vec = y_arr[thresh_arr].flatten()
+            x_vec = self.x_arr[thresh_arr].flatten()
+            y_vec = self.y_arr[thresh_arr].flatten()
             fluor_vec = chan_arr[thresh_arr].flatten()
             frame_vec = frame*ones_vec
             chan_vec = acq.chan_ind_list[c_i]*ones_vec
-            pad_vec = pad_ind*ones_vec
-            scale_vec = scale*ones_vec
-            data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec]
+            pad_vec = self.pad_ind*ones_vec
+            scale_vec = self.scale*ones_vec
+            thresh_vec = thresh*ones_vec
+            data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec, thresh_vec]
             update_df = pd.DataFrame(dict(zip(columns, data_cols)))
-            out_df = pd.concat([out_df, update_df])
+            out_df = pd.concat([out_df, update_df], ignore_index=True)
+    return out_df
+    #self.out_df = out_df
 
-def label_helper(im_arr, bg_im_arr):
-    uint_max = 65535
-    im_arr = im_arr / uint_max
-    bg_im_arr = bg_im_arr / uint_max
-    w, h = im_arr.shape
-    # Smooth to reduce noise
-    g_radius = 5
-    im_smooth = skimage.filters.gaussian(im_arr, g_radius)
-    bg_smooth = skimage.filters.gaussian(bg_im_arr, g_radius)
-    im_bgsub = im_smooth - bg_smooth
-    im_bgsub[im_bgsub < 0] = 0
+  def begin(self):
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh']
+    out_df = pd.DataFrame(columns=columns, dtype=np.float)
+    # Check that csvs directory exists
+    out_dir = os.path.join(self.acq.super_dir,"csvs")
+    if not os.path.isdir(out_dir):
+      os.mkdir(out_dir)
+    out_tmpl = os.path.join(out_dir,"pad{}.csv")
+    for frame in self.acq.frame_vec:
+      in_df = self.process_frame(frame)
+      out_df = pd.concat([in_df, out_df], axis=0, ignore_index=True)
+    n_rows = len(out_df)
+    acqname = "_".join(self.acq.super_dir.split(os.path.sep)[-2:])
+    acqname_vec = np.repeat(acqname, n_rows)
+    acqname_col = pd.DataFrame(acqname_vec, index=out_df.index, columns=['acqname'])
+    out_df = pd.concat([out_df, acqname_col], axis=1)
+    out_df.to_csv(out_tmpl.format(self.pad_ind), index=False)
 
-    thresh = skimage.filters.threshold_li(im_bgsub)
-    thresh = np.max([40/uint_max,thresh])
-    im_bw = im_bgsub > thresh
-    if np.sum(im_bw) == 0 :
-        return 0, 0
-    im_labeled, num = skimage.morphology.label(im_bw, return_num=True)
-    return im_labeled, num
+class ComparisonAnimator():
+    def _setup_imshow(self, ax):
+        # setup blank imshow axis with no ticks
+        norm_arr = self.processor.pad_helper.norm_arr
+        handle = ax.imshow(norm_arr, animated=True, interpolation='none')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return handle 
+    
+    def _animate_movie(self, frame):
+        wh = self.processor.pad_helper
+        wh.get_frame_arr(frame)
+        wh._prep_img_arr()
+        wh._prep_norm_arr()
+        self.ims[0].set_data(wh.norm_arr)
+        self.axs[1].set_title(frame)
+        
+    def _prep_thresh_chan(self, im_dist, thresh_arr, c_i):
+        processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
+        if np.any(thresh_arr):
+            m_dist = im_dist[thresh_arr].max()*np.ones_like(thresh_arr)
+            dist_band = np.isclose(im_dist,m_dist,atol=3)
+            wh.pad_arr[:,:,c_i] = (thresh_arr+1.5*dist_band)
+        else:
+            wh.pad_arr[:,:,c_i] = 0
 
-def process_img(df_row, cor_pos_df):
-    bg_tmpl = 'worker_outputs/bg_arr_{}_{}.npy'
-    pad, pos, fn, frame, channel, im_time = df_row[['pad','pos','fn','frame','channel','time']].values
-    py, px = cor_pos_df.loc[pos,['y', 'x']]
-    im_arr = skimage.io.imread(fn)
-    bg_im_arr = np.load(bg_tmpl.format(frame, channel))
-    im_bgsub = im_arr - bg_im_arr
-    im_labeled, num = label_helper(im_arr, bg_im_arr)
-    columns = ['area', 'x','y','fluor','label','time']
-    if num == 0 :
-        return pd.DataFrame(columns=columns)
-    # make df
-    index = np.arange(num)
-    df = pd.DataFrame(columns=columns,index=index)
-    regionprops_list = skimage.measure.regionprops(im_labeled)
-    for label in np.arange(1,num+1):
-        regionprops = regionprops_list[label-1]
-        mask = im_labeled == label
-        fluor = np.mean(mask*im_bgsub)
-        y, x = np.array((py,px)) - np.array(regionprops.centroid)*um_pix
-        df.loc[label-1,columns] = regionprops.area, x, y, fluor, label, im_time
-    return df
+    def _finish_thresh(self, frame):
+        processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
+        wh.pad_arr *= 4e4
+        wh.pad_arr += np.random.random(wh.pad_arr.shape)
+        wh._prep_img_arr()
+        wh._prep_norm_arr()
+        self.ims[1].set_data(wh.norm_arr)    
+        
+    def _animate_thresh(self, frame):
+        processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
+        im_dist, yfp_thresh = processor._yfp_dist(frame)
+        wh.pad_arr[:,:,0] = im_dist==0
+        for chan in [1,2]:
+            thresh_arr, chan_arr, thresh = processor._chan_thresh(frame, chan)
+            if np.any(thresh_arr):
+                m_dist = im_dist[thresh_arr].max()*np.ones_like(thresh_arr)
+                dist_band = np.isclose(im_dist,m_dist,atol=3)
+                wh.pad_arr[:,:,chan] = (thresh_arr+1.5*dist_band)
+            else:
+                wh.pad_arr[:,:,chan] = 0
+        wh.pad_arr *= 4e4
+        wh.pad_arr += np.random.random(wh.pad_arr.shape)
+        wh._prep_img_arr()
+        wh._prep_norm_arr()
+        self.ims[1].set_data(wh.norm_arr)    
+        
+    def _animate_thresh_from_df(self, frame):
+        processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
+        im_dist, yfp_thresh = processor._yfp_dist(frame)
+        df = pd.read_csv(self.tmpl.format(self.processor.pad_ind, frame))
+        wh.pad_arr[:] = 0
+        x_vec, y_vec = df.loc[:,['x','y']].values.astype(np.int).T
+        c_vec = (df.channel.values.astype(np.int)-1)//2
+        wh.pad_arr[y_vec, x_vec, c_vec] = 1
+        wh.pad_arr *= 4e4
+        wh.pad_arr += np.random.random(wh.pad_arr.shape)
+        wh._prep_img_arr()
+        wh._prep_norm_arr()
+        self.ims[1].set_data(wh.norm_arr)
+        
+    def _setup_figure(self):
+        processor = self.processor
+        oldfig = getattr(self, 'fig', None)
+        if not (oldfig is None):
+            plt.close(oldfig)
+        fig, axs = plt.subplots(1,2,figsize=(10,7))
+        self.fig = fig
+        self.axs = axs
+        self.ims = [self._setup_imshow(ax) for ax in axs]
+        exp_name = '/'.join([processor.acq.expname, processor.acq.acqname])
+        title = "{}\nPad:{}".format(exp_name, processor.pad_ind)
+        axs[0].set_title(title)
+        axs[0].set_xlabel('Fluorescence')
+        axs[1].set_xlabel('Above threshold')
+        
+    def __init__(self, processor, step=1):
+        self.step = step
+        wh = processor.pad_helper
+        wh.load_bg_img = wh.load_bg_poslist_img
+        self.processor = processor
+        acq = processor.acq
+        self.tmpl = os.path.join(acq.super_dir,'csvs','pad{}_frame{}.csv')
+        self._setup_figure()
+        
+    def animate(self, frame):
+        self._animate_movie(frame)
+        self._animate_thresh(frame)
+        self.axs[1].set_title(frame)
+        
+    def get_animation(self):
+        fig = self.fig
+        func = self.animate
+        frames = self.processor.acq.frame_vec[::self.step]
+        anim = anm.FuncAnimation(fig, func, interval=70, frames=frames)
+        return anim
+    
+class ProcessUnordered():
+  '''
+  Create dataframe of background-subtracted experimental data from one pad.
+  Assumes yfp, rfp, cfp channels in that order
 
-def process_df(fn_out, sub_df, cor_pos_df):
-    dfs = [process_img(sub_df.iloc[xx,:], cor_pos_df) for xx in np.arange(len(sub_df))]
-    out_df = pd.concat(dfs, ignore_index=False)
-    out_df.to_csv(fn_out)
+  Processor class uses WriteHelper to grab bg-subtracted frames
+  '''
+  def __init__(self, acq, pad_ind, scale, sigma=None, bg_sigma=None, print_img=False, bg_option='default'):
+    self.acq = acq
+    self.pad_ind = pad_ind
+    self.scale = scale
+    if sigma is None:
+      self.sigma = 4/scale
+    if bg_sigma is None:
+      self.bg_sigma = 64/scale
+    self.minsize = 50/(scale**2)
+    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, sigma=sigma)
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel','scale']
+    self.out_df = pd.DataFrame(columns=columns)
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
+    self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
+    # Minimum thresholds
+    thresh_vec = [90,90,1.5e3]
+    thresh_min_polys = [np.array([-5.645e-6,1.962e-3,-1.088e-1,1.622,3.66e1])*2,
+        np.array((-4.345e-5,6.180e-3,-2.060e-1,1.424,2.3e1))*2,
+        np.array((-4.695e-5,8.906e-3,-3.775e-1,1.847e-1,4.5e2))*2]
+    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
+    chan_inds = [2,3,5]
+    self.thresh_min_dict = dict(zip(chan_inds, thresh_vec))
+    self.thresh_min_fn_dict = dict(zip(chan_inds, thresh_min_fns))
+    # Print img setup
+    self.print_img = print_img
+    if print_img:
+      self.printer = ComparisonAnimator(self)
+      out_tmpl = 'frame{:02d}_pad{:02d}.png'
+      out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
+      self.out_tmpl = out_tmpl
 
-def par_worker(args):
-    process_df(*args)
+  def _yfp_dist(self, frame):
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    thresh_arr, yfp_arr, thresh = self._chan_thresh(frame, 0)
+    #yfp_arr = self.pad_helper.pad_arr[:,:,0]
+    #yfp_arr = skimage.filters.gaussian(yfp_arr, self.sigma, preserve_range=True)
+    #thresh = skimage.filters.threshold_yen(yfp_arr)
+    #thresh = skimage.filters.threshold_li(yfp_arr)
+    if np.any(thresh_arr):
+      im_dist = ndi.morphology.distance_transform_bf(yfp_arr<thresh)
+    else:
+      im_dist = np.sqrt(np.power(self.x_arr-nx//2,2) + np.power(self.y_arr-ny//2,2))
+    return im_dist, thresh
 
-def process_all(files_df, cor_pos_df):
-    n_proc = os.cpu_count()
-    n_rows = len(files_df)
-    sub_df_list = [files_df.iloc[i::n_proc,:].copy() for i in np.arange(n_proc)]
-    out_files = ['par_sub_{}.csv'.format(i) for i in np.arange(n_proc)]
-    with multiprocessing.Pool(n_proc) as pool:
-#         pool.map(par_worker, zip(out_files, sub_df_list, [cor_pos_df.copy() for xx in np.arange(n_proc)]))
-        jobs = []
-        for out_fn, sub_df in zip(out_files, sub_df_list):
-            res = pool.apply_async(process_df, args=(out_fn, sub_df.copy(), cor_pos_df.copy()))
-            jobs.append(res)
-        pool.close()
-        pool.join()
-    return out_files
+  def _chan_thresh(self, frame, c_i):
+    chan = self.acq.chan_ind_list[c_i]
+    chan_arr = self.pad_helper.pad_arr[:,:,c_i]
+    #min_thresh = self.thresh_min_dict[chan]
+    min_thresh = self.thresh_min_fn_dict[chan](frame)
+    initial_guess = np.quantile(chan_arr, 0.97)
+    thresh = skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
+    thresh = np.max([min_thresh, thresh])
+    thresh_arr = chan_arr > thresh
+    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr,self.minsize)
+    return thresh_arr, chan_arr, thresh
 
-with open('unique_good_dirs.txt', 'r') as f:
+  def process_frame(self, frame):
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    acq, pad_helper = self.acq, self.pad_helper
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
+    out_df = pd.DataFrame(columns=columns, dtype=np.float)
+    if self.print_img:
+      self.printer._animate_movie(frame)
+    else:
+      pad_helper.get_frame_arr(frame)
+    # Get distance array
+    im_dist, y_thresh = self._yfp_dist(frame)
+    if self.print_img:
+      self.pad_helper.pad_arr[:,:,0] = im_dist==0
+    for c_i in [1,2]:#np.arange(acq.n_chan):
+      chan = acq.chan_ind_list[c_i]
+      thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i)
+      if self.print_img:
+        self.printer._prep_thresh_chan(im_dist, thresh_arr, c_i)
+      n_thresh = np.sum(thresh_arr)
+      if np.any(thresh_arr):
+        ones_vec = np.ones(n_thresh)
+        x_vec = self.x_arr[thresh_arr].flatten()
+        y_vec = self.y_arr[thresh_arr].flatten()
+        fluor_vec = chan_arr[thresh_arr].flatten()
+        frame_vec = frame*ones_vec
+        chan_vec = chan*ones_vec
+        pad_vec = self.pad_ind*ones_vec
+        scale_vec = self.scale*ones_vec
+        thresh_vec = thresh*ones_vec
+        dist_vec = im_dist[thresh_arr].flatten()
+        data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec, thresh_vec,
+            dist_vec]
+        update_df = pd.DataFrame(dict(zip(columns, data_cols)))
+        out_df = pd.concat([out_df, update_df], ignore_index=True)
+    if self.print_img:
+      self.printer._finish_thresh(frame)
+      out_fn = self.out_tmpl.format(frame, self.pad_ind)
+      self.printer.fig.savefig(out_fn)
+    return out_df
+    #self.out_df = out_df
+
+  def begin(self):
+    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
+    out_df = pd.DataFrame(columns=columns, dtype=np.float)
+    # Check that csvs directory exists
+    out_dir = os.path.join(self.acq.super_dir,"csvs")
+    if not os.path.isdir(out_dir):
+      os.mkdir(out_dir)
+    out_tmpl = os.path.join(out_dir,"pad{}.csv")
+    for frame in self.acq.frame_vec:
+      in_df = self.process_frame(frame)
+      out_df = pd.concat([in_df, out_df], axis=0, ignore_index=True)
+    n_rows = len(out_df)
+    acqname = "_".join(self.acq.super_dir.split(os.path.sep)[-2:])
+    acqname_vec = np.repeat(acqname, n_rows)
+    acqname_col = pd.DataFrame(acqname_vec, index=out_df.index, columns=['acqname'])
+    out_df = pd.concat([out_df, acqname_col], axis=1)
+    out_df.to_csv(out_tmpl.format(self.pad_ind), index=False)
+
+class ProcessUnorderedDiff():
+  '''
+  Create dataframe of background-subtracted experimental data from one pad.
+  Assumes yfp, rfp, cfp channels in that order
+
+  Processor class uses WriteHelper to grab bg-subtracted frames
+  '''
+  def __init__(self, acq, pad_ind, scale, sigma=None, bg_sigma=None, print_img=False, bg_option='default',
+      diff=False):
+    # Setup attributes
+    self.acq = acq
+    self.pad_ind = pad_ind
+    self.scale = scale
+    self.diff = diff
+    if sigma is None:
+      self.sigma = 4/scale
+    if bg_sigma is None:
+      self.bg_sigma = 64/scale
+    self.minsize = 50/(scale**2)
+    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, sigma=sigma, bg_sigma=bg_sigma)
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
+    self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
+
+    # make writehelper and setup arr
+    n_frames = len(acq.frame_vec)
+    im_h, im_w, n_chan = self.pad_helper.pad_arr.shape
+    arr = np.zeros((n_frames, n_chan, im_h, im_w))
+    for frame in acq.frame_vec:
+      self.pad_helper.get_frame_arr(frame)
+      for ci in np.arange(n_chan):
+        arr[frame,ci,:,:,] = self.pad_helper.pad_arr[:,:,ci].copy()
+    self.arr = arr
+    sg_filter = lambda arr : signal.savgol_filter(arr, 9, 1, axis=0)
+    self.filt_arr = sg_filter(arr)
+    self.diff_arr = sg_filter(np.diff(self.filt_arr, axis=0))
+    #self.diff_arr = np.diff(ndi.median_filter(arr, (5,1,1,1)), axis=0)
+    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
+    thresh_df_fn = os.path.join(self.acq.super_dir,"csvs",'empirical_thresholds.csv')
+    self.thresh_df = pd.read_csv(thresh_df_fn, index_col=['type','ci','frame'])
+
+    # Global thresh minds
+    chan_inds = [2,3,5]
+    self.thresh_min_dict = dict(zip([2,3,5],[1e3,5e2,4e3]))
+    self.thresh_min_diff_dict = dict(zip([2,3,5],[40,30,170]))
+
+    # Minimum thresholds
+    thresh_min_polys = [np.array([-5.645e-6,1.962e-3,-1.088e-1,1.622,3.66e1])*4,
+                        np.array((-4.345e-5,6.180e-3,-2.060e-1,1.424,2.3e1))*2,
+                        np.array((-4.695e-5,8.906e-3,-3.775e-1,1.847e-1,4.5e2))*2]
+    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
+    self.thresh_min_fn_dict = dict(zip(chan_inds, thresh_min_fns))
+
+    # Minimum diff thresholds
+    thresh_min_polys = [np.array([-8.104e-08, -2.482e-05, 7.434e-03, -1.742e-01,50+1.022e+01]),
+                        np.array([1.850e-07,-1.490e-04,1.499e-02,-3.256e-01,50+3.949e+00]),
+                        np.array([-4.721e-06,6.401e-04,-1.722e-02,7.404e-02,50+6.627e+00])]
+    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
+    self.thresh_min_diff_fn_dict = dict(zip(chan_inds, thresh_min_fns))
+
+    # Print img setup
+    self.print_img = print_img
+    if print_img:
+      self.printer = ComparisonAnimator(self)
+      out_tmpl = 'frame{:02d}_pad{:02d}.png'
+      if self.diff:
+        out_tmpl = os.path.abspath(os.path.join('.','pngs','diff_thresh_progress', out_tmpl))
+      else:
+        out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
+      self.png_tmpl = out_tmpl
+
+  def _yfp_dist(self, frame):
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    chan, c_i = 2, 0
+    chan_arr = self.arr[frame, c_i, :, :]
+    min_thresh = self.thresh_df.loc[('arr',0,frame),'threshold']*2
+    #min_thresh = self.thresh_min_dict[chan]
+    #initial_guess = np.quantile(chan_arr, 0.97)
+    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
+    thresh = np.max([min_thresh, thresh])
+    thresh_arr = chan_arr > thresh
+    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr, self.minsize)
+    if np.any(thresh_arr):
+      im_dist = ndi.morphology.distance_transform_bf(chan_arr<thresh)
+    else:
+      im_dist = np.sqrt(np.power(self.x_arr-nx//2,2) + np.power(self.y_arr-ny//2,2))
+    return im_dist, thresh
+
+  def _chan_diff_thresh(self, frame, c_i):
+    chan = self.acq.chan_ind_list[c_i]
+    chan_arr = self.diff_arr[frame, c_i, :, :]
+    min_thresh = self.thresh_df.loc[('diff',c_i,frame),'threshold']*2
+    #min_thresh = self.thresh_min_diff_dict[chan]
+    #initial_guess = np.quantile(chan_arr, 0.97)
+    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
+    thresh = np.max([min_thresh, thresh])
+    thresh_arr = chan_arr > thresh
+    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr, self.minsize)
+    return thresh_arr, chan_arr, thresh
+
+  def _chan_thresh(self, frame, c_i):
+    chan = self.acq.chan_ind_list[c_i]
+    chan_arr = self.pad_helper.pad_arr[:,:,c_i]
+    min_thresh = self.thresh_df.loc[('arr',c_i,frame),'threshold']*2
+    #min_thresh = self.thresh_min_dict[chan]
+    #initial_guess = np.quantile(chan_arr, 0.97)
+    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
+    thresh = np.max([min_thresh, thresh])
+    thresh_arr = chan_arr > thresh
+    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr,self.minsize)
+    return thresh_arr, chan_arr, thresh
+
+  def _update_df(self, thresh_arr, chan_arr, frame, chan, im_dist, thresh):
+    n_thresh = np.sum(thresh_arr)
+    if np.any(thresh_arr):
+      ones_vec = np.ones(n_thresh)
+      x_vec = self.x_arr[thresh_arr].flatten()
+      y_vec = self.y_arr[thresh_arr].flatten()
+      fluor_vec = chan_arr[thresh_arr].flatten()
+      frame_vec = frame*ones_vec
+      chan_vec = chan*ones_vec
+      pad_vec = self.pad_ind*ones_vec
+      scale_vec = self.scale*ones_vec
+      thresh_vec = thresh*ones_vec
+      d_coeff = self.acq.pixel_size * self.scale
+      dist_vec = im_dist[thresh_arr].flatten() * d_coeff
+      data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec, thresh_vec, dist_vec]
+      update_df = pd.DataFrame(dict(zip(self.columns, data_cols)))
+      return update_df
+    return None
+
+  def process_frame(self, frame):
+    ny, nx, nc = self.pad_helper.pad_arr.shape
+    acq, pad_helper, printer = self.acq, self.pad_helper, self.printer
+    # Prep frame data
+    if self.print_img:
+      for ci in np.arange(nc):
+        if self.diff:
+          pad_helper.pad_arr[:,:,ci] = self.diff_arr[frame, ci,:,:]
+        else:
+          pad_helper.pad_arr[:,:,ci] = self.arr[frame, ci,:,:]
+      pad_helper._prep_img_arr()
+      pad_helper._prep_norm_arr()
+      printer.ims[0].set_data(pad_helper.norm_arr)
+      printer.axs[1].set_title(frame)
+
+    out_df = pd.DataFrame(columns=self.columns, dtype=np.float)
+    # Get distance array and prep frame data
+    im_dist, y_thresh = self._yfp_dist(frame)
+    if self.print_img:
+      pad_helper.pad_arr[:,:,0] = im_dist==0
+
+    # Run it
+    for c_i in [1,2]:
+      chan = acq.chan_ind_list[c_i]
+      if self.diff:
+        thresh_arr, chan_arr, thresh = self._chan_diff_thresh(frame, c_i)
+      else:
+        thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i)
+      if self.print_img:
+        printer._prep_thresh_chan(im_dist, thresh_arr, c_i)
+      update_df = self._update_df(thresh_arr, chan_arr, frame, chan, im_dist, thresh)
+      if not (update_df is None):
+        out_df = pd.concat([out_df, update_df], ignore_index=True)
+    if self.print_img:
+      printer._finish_thresh(frame)
+      out_fn = self.png_tmpl.format(frame, self.pad_ind)
+      printer.fig.savefig(out_fn)
+    return out_df
+
+  def begin(self, diff=False):
+    self.diff = diff
+    out_df = pd.DataFrame(columns=self.columns, dtype=np.float)
+    # Check that csvs directory exists
+    out_dir = os.path.join(self.acq.super_dir,"csvs")
+    if not os.path.isdir(out_dir):
+      os.mkdir(out_dir)
+    if self.print_img:
+      self.printer = ComparisonAnimator(self)
+      out_tmpl = 'frame{:02d}_pad{:02d}.png'
+      if diff:
+        out_tmpl = os.path.abspath(os.path.join('.','pngs','diff_thresh_progress', out_tmpl))
+      else:
+        out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
+      self.png_tmpl = out_tmpl
+    if diff:
+      out_tmpl = os.path.join(out_dir,"diff_pad{}.csv")
+    else:
+      out_tmpl = os.path.join(out_dir,"pad{}.csv")
+    for frame in self.acq.frame_vec[:-1]:
+      in_df = self.process_frame(frame)
+      out_df = pd.concat([in_df, out_df], axis=0, ignore_index=True)
+    n_rows = len(out_df)
+    acqname = "_".join(self.acq.super_dir.split(os.path.sep)[-2:])
+    acqname_vec = np.repeat(acqname, n_rows)
+    acqname_col = pd.DataFrame(acqname_vec, index=out_df.index, columns=['acqname'])
+    out_df = pd.concat([out_df, acqname_col], axis=1)
+    out_df.to_csv(out_tmpl.format(self.pad_ind), index=False)
+
+class FrontFitter():
+  def __init__(self):
+    pass
+
+
+
+with open('txt_files/unique_good_dirs.txt', 'r') as f:
     lines = f.read().splitlines()
 
