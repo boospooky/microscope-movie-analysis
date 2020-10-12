@@ -35,6 +35,7 @@ sns.set(rc=rc)
 
 from scipy import ndimage as ndi
 from scipy import signal
+from scipy import optimize as opt
 import scipy as scp
 import pandas as pd
 
@@ -476,7 +477,7 @@ def make_files_df(super_dir, overwrite=False):
         files_df.loc[inds,'pos'] = i
     assert not np.any(files_df.pos.values == -1)
     res = apply_manual_pad_labeling(files_df, dict_key)
-    if np.any(files_df.pad.values<0):
+    if np.any(files_df['pad'].values<0):
         print(super_dir, 'not all pads assigned')
     # reassign integer values to each pad. If any are missed, throw exception
     gb_pad = files_df.groupby(['pad'])
@@ -489,7 +490,7 @@ def apply_manual_pad_labeling(files_df, key):
       unique_positions = np.sort(np.unique(files_df.pos.values))
       pad_positions_tuples = np.array(pad_metadata_dict[key])
       gb_pos = files_df.groupby('pos')
-      pad_ind = files_df.pad.max()+1
+      pad_ind = files_df['pad'].max()+1
       for positions_tuple in pad_positions_tuples:
           update_pos = np.array(positions_tuple)
           for pos in update_pos:
@@ -501,7 +502,7 @@ def apply_manual_pad_labeling(files_df, key):
       return 1
 
 def make_positions_df(files_df):
-    n_pads = len(np.unique(files_df.pad))
+    n_pads = len(np.unique(files_df['pad']))
     n_frames = np.max(files_df.frame)+1
     pos_df = files_df.loc[:,['pos','pad','fn']].groupby('pos').agg(np.min)
     n_pos = len(pos_df)
@@ -552,7 +553,7 @@ def plot_positions(cor_pos_df):
         plt.plot(np.float(cor_pos_df.x[p_i]),
                  -np.float(cor_pos_df.y[p_i]),
                  '.',
-                 label=cor_pos_df.pad[p_i],
+                 label=cor_pos_df['pad'][p_i],
                  ms=20,
                  c=point_color)
         plt.text(np.float(cor_pos_df.x[p_i]),
@@ -606,8 +607,10 @@ class WriteHelper():
     self.fig_dim = 20
     self.sigma = sigma
     self.bg_sigma = bg_sigma
+    self.bg_option = bg_option
     if pad_ind is None:
       pad_ind = 0
+    self.pad_ind = pad_ind
 
     # Select bg option
     bg_options = ['default', 'init', 'pos_list', 'comb']
@@ -659,6 +662,9 @@ class WriteHelper():
     h, w = self.one_arr.shape
     self.pad_arr[:] = 0
     frame_arr = np.zeros((h, w), dtype=np.float32)
+    chan_vec = self.chan_vec
+    n_chan = len(chan_vec)
+    chan_dict = dict(zip(chan_vec, np.arange(n_chan)))
     for chan_i, channel in enumerate(self.chan_vec):
       for pos in self.pos_list:
         x0, y0 = (self.pos_lims.loc[pos,:].values - self.rel_mins[:,0]).astype(np.int)
@@ -666,6 +672,15 @@ class WriteHelper():
         xslice = slice(x0,x0+w)
         frame_arr[:] = self.get_bgsub_arr(frame_ind, pos, channel)
         self.pad_arr[yslice,xslice,chan_i] += frame_arr / self.count_arr[yslice, xslice]
+    # Correct for cross-channel interference
+    inter_tuples = [(3,2,0.0585)]
+    inter_df = pd.DataFrame(inter_tuples, columns=['source_chan','dest_chan','rate'])
+    gb_source_chan = inter_df.groupby('source_chan')
+    for source_chan in inter_df.source_chan.values:
+      sub_inter_df = gb_source_chan.get_group(source_chan)
+      dest_chan, rate = sub_inter_df[['dest_chan','rate']].values[0]
+      source_chan_i, dest_chan_i = (chan_dict[source_chan], chan_dict[dest_chan])
+      self.pad_arr[:,:,dest_chan_i] -= rate*self.pad_arr[:,:,source_chan_i]
 
   def _prep_img_arr(self):
     pad_h, pad_w = self.pad_arr.shape[:2]
@@ -718,6 +733,39 @@ class WriteHelper():
     plt.close('all')
     anim.save(out_fn, dpi=80, fps=3, writer=writer)
 
+  def load_movie(self):
+    n_frames = len(self.acq.frame_vec)
+    im_h, im_w, n_chan = self.pad_arr.shape
+    arr = np.zeros((n_frames, n_chan, im_h, im_w))
+    for frame in self.acq.frame_vec:
+      self.get_frame_arr(frame)
+      for ci in np.arange(n_chan):
+        arr[frame,ci,:,:,] = self.pad_arr[:,:,ci].copy()
+    return arr
+
+  def save_tiffstack(self, tiff_fn):
+    keys = ['scale','bg_option','sigma','bg_sigma']
+    values = self.scale, self.bg_option, self.sigma, self.bg_sigma
+    metadata = dict(zip(keys, values))
+    tiff_dir = os.path.dirname(tiff_fn)
+    assert os.path.isdir(tiff_dir)
+    n_chan = self.acq.n_chan
+    with skimage.external.tifffile.TiffWriter(tiff_fn, imagej=True) as tif:
+      for frame in self.acq.frame_vec:
+        self.get_frame_arr(frame)
+        for ci in np.arange(n_chan):
+          arr = self.pad_arr[:,:,ci]
+          tif.save(arr, metadata=metadata)
+    return tiff_fn
+
+  def load_tiffstack(self, fn):
+    arr = skimage.external.tifffile.imread(fn)
+    nh, nw, nc = self.pad_arr.shape
+    nf = len(self.acq.frame_vec)
+    arr_shape = (nf, nc, nh, nw)
+    arr = arr.reshape(arr_shape)
+    return arr
+
   def save_frame(self, out_fn, frame_ind):
     self.out_fn = out_fn
     fig, ax = self.setup_plot()
@@ -743,8 +791,6 @@ class Acquisition():
             with open('debug.log','a') as f:
                 f.write(time.asctime()+"\n")
                 f.write('end {} debug \n'.format(in_str))
-#        tiff_fn = os.path.abspath(os.path.join(super_dir, 'arr.tiff'))
-#        self.tiff_fn = tiff_fn
 
     def _init_dir(self, super_dir, overwrite_files_df=False, overwrite_cor_pos_df=False, overwrite_time_df=False):
         self.super_dir = os.path.abspath(super_dir)
@@ -817,6 +863,11 @@ class Acquisition():
                   self.rotation = 180
             if self.magoption16:
                 self.pixel_size = self.pixel_size/1.6
+            gb = self.files_df[['frame','pad','time']].groupby(['frame','pad'])
+            time_df = gb.agg(np.mean)
+            time_df['time'] = time_df['time'] - time_df.time.min()
+            time_df = time_df.sort_index()
+            self.time_df = time_df
         else:
             print('initialize with files_df')
 
@@ -885,7 +936,7 @@ class Acquisition():
     def write_all_pad_gifs(self, out_fn, scale=8, skip=1, bg_option='default'):
         out_tmpl = '{}_{}_pad_{}.gif'
         out_tmpl = os.path.abspath(os.path.join('.','anims', out_tmpl))
-        pad_inds = np.unique(self.files_df.pad.values)
+        pad_inds = np.unique(self.files_df['pad'].values)
         for pad_ind in pad_inds:
             out_fn = out_tmpl.format(self.expname, self.acqname, pad_ind)
             self.write_movie(out_fn, pad_ind, scale, skip, bg_option)
@@ -906,7 +957,7 @@ class Acquisition():
                 print(err)
 
     def write_all_pad_frame(self, frame_ind, scale=8, bg_option='default'):
-        pad_inds = np.unique(self.files_df.pad.values)
+        pad_inds = np.unique(self.files_df['pad'].values)
         for pad_ind in pad_inds:
             self.write_frame(frame_ind, pad_ind, scale, bg_option='default')
 
@@ -1104,129 +1155,6 @@ class ComparisonAnimator():
         anim = anm.FuncAnimation(fig, func, interval=70, frames=frames)
         return anim
     
-class ProcessUnordered():
-  '''
-  Create dataframe of background-subtracted experimental data from one pad.
-  Assumes yfp, rfp, cfp channels in that order
-
-  Processor class uses WriteHelper to grab bg-subtracted frames
-  '''
-  def __init__(self, acq, pad_ind, scale, sigma=None, bg_sigma=None, print_img=False, bg_option='default'):
-    self.acq = acq
-    self.pad_ind = pad_ind
-    self.scale = scale
-    if sigma is None:
-      self.sigma = 4/scale
-    if bg_sigma is None:
-      self.bg_sigma = 64/scale
-    self.minsize = 50/(scale**2)
-    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, sigma=sigma)
-    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel','scale']
-    self.out_df = pd.DataFrame(columns=columns)
-    ny, nx, nc = self.pad_helper.pad_arr.shape
-    self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
-    self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
-    # Minimum thresholds
-    thresh_vec = [90,90,1.5e3]
-    thresh_min_polys = [np.array([-5.645e-6,1.962e-3,-1.088e-1,1.622,3.66e1])*2,
-        np.array((-4.345e-5,6.180e-3,-2.060e-1,1.424,2.3e1))*2,
-        np.array((-4.695e-5,8.906e-3,-3.775e-1,1.847e-1,4.5e2))*2]
-    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
-    chan_inds = [2,3,5]
-    self.thresh_min_dict = dict(zip(chan_inds, thresh_vec))
-    self.thresh_min_fn_dict = dict(zip(chan_inds, thresh_min_fns))
-    # Print img setup
-    self.print_img = print_img
-    if print_img:
-      self.printer = ComparisonAnimator(self)
-      out_tmpl = 'frame{:02d}_pad{:02d}.png'
-      out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
-      self.out_tmpl = out_tmpl
-
-  def _yfp_dist(self, frame):
-    ny, nx, nc = self.pad_helper.pad_arr.shape
-    thresh_arr, yfp_arr, thresh = self._chan_thresh(frame, 0)
-    #yfp_arr = self.pad_helper.pad_arr[:,:,0]
-    #yfp_arr = skimage.filters.gaussian(yfp_arr, self.sigma, preserve_range=True)
-    #thresh = skimage.filters.threshold_yen(yfp_arr)
-    #thresh = skimage.filters.threshold_li(yfp_arr)
-    if np.any(thresh_arr):
-      im_dist = ndi.morphology.distance_transform_bf(yfp_arr<thresh)
-    else:
-      im_dist = np.sqrt(np.power(self.x_arr-nx//2,2) + np.power(self.y_arr-ny//2,2))
-    return im_dist, thresh
-
-  def _chan_thresh(self, frame, c_i):
-    chan = self.acq.chan_ind_list[c_i]
-    chan_arr = self.pad_helper.pad_arr[:,:,c_i]
-    #min_thresh = self.thresh_min_dict[chan]
-    min_thresh = self.thresh_min_fn_dict[chan](frame)
-    initial_guess = np.quantile(chan_arr, 0.97)
-    thresh = skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
-    thresh = np.max([min_thresh, thresh])
-    thresh_arr = chan_arr > thresh
-    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr,self.minsize)
-    return thresh_arr, chan_arr, thresh
-
-  def process_frame(self, frame):
-    ny, nx, nc = self.pad_helper.pad_arr.shape
-    acq, pad_helper = self.acq, self.pad_helper
-    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
-    out_df = pd.DataFrame(columns=columns, dtype=np.float)
-    if self.print_img:
-      self.printer._animate_movie(frame)
-    else:
-      pad_helper.get_frame_arr(frame)
-    # Get distance array
-    im_dist, y_thresh = self._yfp_dist(frame)
-    if self.print_img:
-      self.pad_helper.pad_arr[:,:,0] = im_dist==0
-    for c_i in [1,2]:#np.arange(acq.n_chan):
-      chan = acq.chan_ind_list[c_i]
-      thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i)
-      if self.print_img:
-        self.printer._prep_thresh_chan(im_dist, thresh_arr, c_i)
-      n_thresh = np.sum(thresh_arr)
-      if np.any(thresh_arr):
-        ones_vec = np.ones(n_thresh)
-        x_vec = self.x_arr[thresh_arr].flatten()
-        y_vec = self.y_arr[thresh_arr].flatten()
-        fluor_vec = chan_arr[thresh_arr].flatten()
-        frame_vec = frame*ones_vec
-        chan_vec = chan*ones_vec
-        pad_vec = self.pad_ind*ones_vec
-        scale_vec = self.scale*ones_vec
-        thresh_vec = thresh*ones_vec
-        dist_vec = im_dist[thresh_arr].flatten()
-        data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec, thresh_vec,
-            dist_vec]
-        update_df = pd.DataFrame(dict(zip(columns, data_cols)))
-        out_df = pd.concat([out_df, update_df], ignore_index=True)
-    if self.print_img:
-      self.printer._finish_thresh(frame)
-      out_fn = self.out_tmpl.format(frame, self.pad_ind)
-      self.printer.fig.savefig(out_fn)
-    return out_df
-    #self.out_df = out_df
-
-  def begin(self):
-    columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
-    out_df = pd.DataFrame(columns=columns, dtype=np.float)
-    # Check that csvs directory exists
-    out_dir = os.path.join(self.acq.super_dir,"csvs")
-    if not os.path.isdir(out_dir):
-      os.mkdir(out_dir)
-    out_tmpl = os.path.join(out_dir,"pad{}.csv")
-    for frame in self.acq.frame_vec:
-      in_df = self.process_frame(frame)
-      out_df = pd.concat([in_df, out_df], axis=0, ignore_index=True)
-    n_rows = len(out_df)
-    acqname = "_".join(self.acq.super_dir.split(os.path.sep)[-2:])
-    acqname_vec = np.repeat(acqname, n_rows)
-    acqname_col = pd.DataFrame(acqname_vec, index=out_df.index, columns=['acqname'])
-    out_df = pd.concat([out_df, acqname_col], axis=1)
-    out_df.to_csv(out_tmpl.format(self.pad_ind), index=False)
-
 class ProcessUnorderedDiff():
   '''
   Create dataframe of background-subtracted experimental data from one pad.
@@ -1243,49 +1171,24 @@ class ProcessUnorderedDiff():
     self.diff = diff
     if sigma is None:
       self.sigma = 4/scale
+    else:
+      self.sigma=sigma
     if bg_sigma is None:
       self.bg_sigma = 64/scale
+    else:
+      self.bg_sigma = bg_sigma
+    self.bg_option = bg_option
     self.minsize = 50/(scale**2)
     self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, sigma=sigma, bg_sigma=bg_sigma)
     ny, nx, nc = self.pad_helper.pad_arr.shape
     self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
     self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
-
-    # make writehelper and setup arr
-    n_frames = len(acq.frame_vec)
-    im_h, im_w, n_chan = self.pad_helper.pad_arr.shape
-    arr = np.zeros((n_frames, n_chan, im_h, im_w))
-    for frame in acq.frame_vec:
-      self.pad_helper.get_frame_arr(frame)
-      for ci in np.arange(n_chan):
-        arr[frame,ci,:,:,] = self.pad_helper.pad_arr[:,:,ci].copy()
-    self.arr = arr
-    sg_filter = lambda arr : signal.savgol_filter(arr, 9, 1, axis=0)
-    self.filt_arr = sg_filter(arr)
-    self.diff_arr = sg_filter(np.diff(self.filt_arr, axis=0))
-    #self.diff_arr = np.diff(ndi.median_filter(arr, (5,1,1,1)), axis=0)
-    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
-    thresh_df_fn = os.path.join(self.acq.super_dir,"csvs",'empirical_thresholds.csv')
-    self.thresh_df = pd.read_csv(thresh_df_fn, index_col=['type','ci','frame'])
-
-    # Global thresh minds
-    chan_inds = [2,3,5]
-    self.thresh_min_dict = dict(zip([2,3,5],[1e3,5e2,4e3]))
-    self.thresh_min_diff_dict = dict(zip([2,3,5],[40,30,170]))
-
-    # Minimum thresholds
-    thresh_min_polys = [np.array([-5.645e-6,1.962e-3,-1.088e-1,1.622,3.66e1])*4,
-                        np.array((-4.345e-5,6.180e-3,-2.060e-1,1.424,2.3e1))*2,
-                        np.array((-4.695e-5,8.906e-3,-3.775e-1,1.847e-1,4.5e2))*2]
-    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
-    self.thresh_min_fn_dict = dict(zip(chan_inds, thresh_min_fns))
-
-    # Minimum diff thresholds
-    thresh_min_polys = [np.array([-8.104e-08, -2.482e-05, 7.434e-03, -1.742e-01,50+1.022e+01]),
-                        np.array([1.850e-07,-1.490e-04,1.499e-02,-3.256e-01,50+3.949e+00]),
-                        np.array([-4.721e-06,6.401e-04,-1.722e-02,7.404e-02,50+6.627e+00])]
-    thresh_min_fns = [np.poly1d(pfit) for pfit in thresh_min_polys]
-    self.thresh_min_diff_fn_dict = dict(zip(chan_inds, thresh_min_fns))
+    tiff_dir = os.path.join('central','scratchio','jparkin','tiffstacks',acq.expname,acq.acqname)
+    if not os.path.exists(tiff_dir):
+      os.makedirs(tiff_dir)
+    self.tiff_dir = tiff_dir
+    self._load_arrs()
+    self._setup_thresh()
 
     # Print img setup
     self.print_img = print_img
@@ -1298,46 +1201,125 @@ class ProcessUnorderedDiff():
         out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
       self.png_tmpl = out_tmpl
 
+  def _check_tiff_metadata(self, tiff_fn):
+    tfile = skimage.external.tifffile.TiffFile(tiff_fn)
+    md_lines = tfile.info().split('\n')
+    imj_flag = False
+    imj_lines = []
+    for line in md_lines:
+      if imj_flag:
+        key, val = line.split(':')
+        imj_lines.append((key[2:], val[1:]))
+      if '* ImageJ' in line:
+        imj_flag = True
+    md_dict = dict(imj_lines)
+    md_keys = ['scale','sigma','bg_sigma','bg_option']
+    md_vals = ['{}'.format(getattr(self, xx)) for xx in md_keys]
+    true_dict = dict(zip(md_keys,md_vals))
+    check_vec = [md_dict[key]==true_dict[key] for key in md_keys]
+    return np.all(check_vec)
+
+  def _load_arrs(self):
+    acq = self.acq
+    # make writehelper and setup arr
+    n_frames = len(acq.frame_vec)
+    im_h, im_w, n_chan = self.pad_helper.pad_arr.shape
+    arr = np.zeros((n_frames, n_chan, im_h, im_w))
+    scratch_dir = self.tiff_dir
+    fn_stem = 'pad{}.tiff'.format(self.pad_ind)
+    tiff_fn = os.path.join(scratch_dir, fn_stem)
+    load_flag = False
+    if os.path.exists(tiff_fn):
+      # Check metadata
+      load_flag = self._check_tiff_metadata(tiff_fn)
+    if load_flag:
+      arr = self._load_movie(tiff_fn)
+    else:
+      for frame in acq.frame_vec:
+        self.pad_helper.get_frame_arr(frame)
+        for ci in np.arange(n_chan):
+          arr[frame,ci,:,:,] = self.pad_helper.pad_arr[:,:,ci].copy()
+    self.arr = arr
+    sg_filter = lambda arr : signal.savgol_filter(arr, 9, 1, axis=0)
+    self.sg_filter = sg_filter
+    self.filt_arr = sg_filter(arr)
+    self.diff_arr = sg_filter(np.diff(self.filt_arr, axis=0))
+    self.arr_dict = dict(zip(['arr','filt','diff'],[self.arr, self.filt_arr, self.diff_arr]))
+    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
+
+  def _setup_thresh(self, overwrite=False):
+    thresh_df_fn = os.path.join(self.acq.super_dir,"csvs",'empirical_thresholds.csv')
+    if overwrite or not os.path.exists(thresh_df_fn):
+      self.thresh_df = self._make_thresh_df()
+      self.thresh_df.to_csv(thresh_df_fn)
+    else:
+      self.thresh_df = pd.read_csv(thresh_df_fn, index_col=['type','ci','frame'])
+
+    # Global thresh minds
+    chan_inds = [2,3,5]
+    self.thresh_min_dict = dict(zip([2,3,5],[1e3,5e2,4e3]))
+    self.thresh_min_diff_dict = dict(zip([2,3,5],[40,30,170]))
+
+  def _load_movie(self, tiff_fn):
+    return self.pad_helper.load_tiffstack(tiff_fn)
+
+  def _load_pad_arr(self, pad_ind):
+    pad_helper = WriteHelper(self.acq,
+                             scale=self.scale,
+                             sigma=self.sigma,
+                             bg_sigma=self.bg_sigma,
+                             pad_ind=pad_ind, 
+                             bg_option=self.bg_option)
+    return self.pad_helper.load_movie()
+
+  def _make_thresh_df(self, bg_pads):
+    # setup array shapes and load images
+    im_h, im_w, n_chan = self.pad_helper.pad_arr.shape
+    n_frames = len(self.acq.frame_vec)
+    c_vec = np.arange(n_chan)
+    stack_shape = (n_frames, n_chan, im_h, im_w, 1)
+    img_list = [self._load_pad_arr(pad).reshape(stack_shape) for pad in bg_pads]
+    # Make arrays
+    bg_arrs = np.concatenate(img_list, axis=-1)
+    filt_arrs = self.sg_filter(bg_arrs)
+    diff_arrs = self.sg_filter(np.diff(filt_arrs, axis=0))
+    thresh_df = pd.DataFrame(dtype=np.float)
+    arr_labels = ['arr', 'filt', 'diff']
+    bounds = [0.05,0.5,0.95]
+    for label, arr in zip(arr_labels, [bg_arrs, filt_arrs, diff_arrs]):
+      f_vec = np.arange(arr.shape[0])
+      bound_arrs = np.quantile(arr, q=bounds, axis=(2,3,4))
+      for ci in c_vec:
+        bound_vecs = bound_arrs[:,:,ci]
+        thresh_vec = 3*(bound_vecs[-1,:] - bound_vecs[0,:]) + bound_vecs[1,:]
+        ind_tup = [(label, ci, frame) for frame in f_vec]
+        multiindex = pd.MultiIndex.from_tuples(ind_tup, names=['type','ci','frame'])
+        thresh_row = pd.DataFrame(index=multiindex, data=thresh_vec, columns=['threshold'])
+        thresh_df = pd.concat([thresh_df, thresh_row], axis=0)
+    return thresh_df
+
+  def _chan_thresh(self, frame, c_i, arr_type='arr'):
+    chan_arr = self.arr_dict[arr_type][frame, c_i,:,:]
+    thresh_min = self.thresh_df.loc[(arr_type,c_i,frame),'threshold']
+    initial_guess = np.quantile(chan_arr, 0.97)
+    thresh = skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
+    thresh = np.max((thresh, thresh_min))
+    thresh_arr = chan_arr > thresh
+    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr,self.minsize)
+    return thresh_arr, chan_arr, thresh
+
   def _yfp_dist(self, frame):
     ny, nx, nc = self.pad_helper.pad_arr.shape
     chan, c_i = 2, 0
-    chan_arr = self.arr[frame, c_i, :, :]
-    min_thresh = self.thresh_df.loc[('arr',0,frame),'threshold']*2
-    #min_thresh = self.thresh_min_dict[chan]
-    #initial_guess = np.quantile(chan_arr, 0.97)
-    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
-    thresh = np.max([min_thresh, thresh])
-    thresh_arr = chan_arr > thresh
-    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr, self.minsize)
+    thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i, arr_type='arr')
     if np.any(thresh_arr):
-      im_dist = ndi.morphology.distance_transform_bf(chan_arr<thresh)
+      im_dist = ndi.morphology.distance_transform_bf(False==thresh_arr)
     else:
       im_dist = np.sqrt(np.power(self.x_arr-nx//2,2) + np.power(self.y_arr-ny//2,2))
     return im_dist, thresh
 
   def _chan_diff_thresh(self, frame, c_i):
-    chan = self.acq.chan_ind_list[c_i]
-    chan_arr = self.diff_arr[frame, c_i, :, :]
-    min_thresh = self.thresh_df.loc[('diff',c_i,frame),'threshold']*2
-    #min_thresh = self.thresh_min_diff_dict[chan]
-    #initial_guess = np.quantile(chan_arr, 0.97)
-    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
-    thresh = np.max([min_thresh, thresh])
-    thresh_arr = chan_arr > thresh
-    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr, self.minsize)
-    return thresh_arr, chan_arr, thresh
-
-  def _chan_thresh(self, frame, c_i):
-    chan = self.acq.chan_ind_list[c_i]
-    chan_arr = self.pad_helper.pad_arr[:,:,c_i]
-    min_thresh = self.thresh_df.loc[('arr',c_i,frame),'threshold']*2
-    #min_thresh = self.thresh_min_dict[chan]
-    #initial_guess = np.quantile(chan_arr, 0.97)
-    thresh = 0#skimage.filters.threshold_li(chan_arr, tolerance=5, initial_guess=initial_guess)
-    thresh = np.max([min_thresh, thresh])
-    thresh_arr = chan_arr > thresh
-    thresh_arr = skimage.morphology.remove_small_objects(thresh_arr,self.minsize)
-    return thresh_arr, chan_arr, thresh
+    return self._chan_thresh(frame, c_i, 'diff')
 
   def _update_df(self, thresh_arr, chan_arr, frame, chan, im_dist, thresh):
     n_thresh = np.sum(thresh_arr)
@@ -1360,10 +1342,11 @@ class ProcessUnorderedDiff():
 
   def process_frame(self, frame):
     ny, nx, nc = self.pad_helper.pad_arr.shape
-    acq, pad_helper, printer = self.acq, self.pad_helper, self.printer
+    acq, pad_helper = self.acq, self.pad_helper
     # Prep frame data
     if self.print_img:
-      for ci in np.arange(nc):
+      printer = self.printer
+      for ci in np.arange(0,nc):
         if self.diff:
           pad_helper.pad_arr[:,:,ci] = self.diff_arr[frame, ci,:,:]
         else:
@@ -1380,7 +1363,7 @@ class ProcessUnorderedDiff():
       pad_helper.pad_arr[:,:,0] = im_dist==0
 
     # Run it
-    for c_i in [1,2]:
+    for c_i in [0,1,2]:
       chan = acq.chan_ind_list[c_i]
       if self.diff:
         thresh_arr, chan_arr, thresh = self._chan_diff_thresh(frame, c_i)
@@ -1397,8 +1380,9 @@ class ProcessUnorderedDiff():
       printer.fig.savefig(out_fn)
     return out_df
 
-  def begin(self, diff=False):
-    self.diff = diff
+  def begin(self):
+    diff = self.diff
+    # Print img setup
     out_df = pd.DataFrame(columns=self.columns, dtype=np.float)
     # Check that csvs directory exists
     out_dir = os.path.join(self.acq.super_dir,"csvs")
@@ -1426,12 +1410,207 @@ class ProcessUnorderedDiff():
     out_df = pd.concat([out_df, acqname_col], axis=1)
     out_df.to_csv(out_tmpl.format(self.pad_ind), index=False)
 
+class FitHelper():
+  def __init__(self, fit_t, fit_x, t0, gamma=100):
+    self.fit_t = fit_t
+    self.fit_x = fit_x
+    self.t0 = t0
+    self.gamma = gamma
+    self.pe = self.p_est()
+
+  def f_fun(self, p, t):
+    t0,c0,c1,c2 = p
+    t = t - t0
+    y = np.zeros_like(t)
+    y[t>0] = c0+np.power(c1*t[t>0],c2)
+    y[t<=0] = 0
+    return y
+
+  def f_res(self, p):
+    fit_t, fit_x = self.fit_t, self.fit_x
+    t0,c0,c1,c2 = p
+    if np.any(np.array([t0,c1,c2])<=0):
+      return np.inf
+    res = fit_x - self.f_fun(p, fit_t)
+    return np.sum(np.log(np.power(res/self.gamma,2)+1))
+
+  def est_res(self, p):
+    fit_t, fit_x = self.fit_t, self.fit_x
+    c0,c1 = p
+    p = np.array([self.t0, c0, c1, 1])
+    res = fit_x - self.f_fun(p, fit_t)
+    return np.sum(np.power(res,2))
+
+  def p_est(self):
+    t, y = self.fit_t, self.fit_x
+    c0,c1,c2 = 0,1/40,1
+    #p0 = pe#np.array([t0,c1,c2])
+    t = self.fit_t
+    y = self.fit_x
+    fit_out = opt.minimize(self.est_res, np.array([c0,c1]), method='Nelder-Mead',options={'maxiter':1000})
+    c0, c1 = fit_out.x
+#    y_diff = np.diff(y)
+#    t_diff = np.diff(t)
+#    dydt_vec = y_diff[t_diff!=0]/t_diff[t_diff!=0]
+#    bool_vec = np.isfinite(dydt_vec)
+#    c1 = np.mean(dydt_vec[bool_vec])
+#    c0 = np.mean(y - self.f_fun((self.t0, c0,c1,c2), t))
+    return np.array([self.t0, c0,c1,c2])
+
+  def p_pad(self, p):
+    return p
+#    t0, c1, c2 = p
+#    c0 = 0
+#    t = self.fit_t
+#    y = self.fit_x
+#    sim_y = self.f_fun((t0,c0,c1,c2), t)
+#    c0 = np.mean(y - sim_y)
+#    p = np.array([t0,c0,c1,c2])
+#    return p
+
+  def res_wrapper(self, p):
+    #return self.f_res(self.p_pad(p))
+    return self.f_res(p)
+
+  def fit_wrapper(self):
+    pe = self.pe
+    t0,c0,c1,c2 = pe
+    p0 = pe#np.array([t0,c1,c2])
+    t = self.fit_t
+    y = self.fit_x
+    fit_out = opt.minimize(self.res_wrapper, p0, method='Nelder-Mead',options={'maxiter':1000})
+    if fit_out.success:
+      p_out = self.p_pad(fit_out.x)
+    else:
+      #p_out = pe.copy()
+      p_out = self.p_pad(fit_out.x)
+      #print(fit_out)
+    return fit_out.success, p_out
+
 class FrontFitter():
-  def __init__(self):
-    pass
+  def __init__(self, acq, bin_width=None, chan_bin_widths=[250,500,2500], diff=False):
+    out_dir = os.path.join(acq.super_dir,"csvs")
+    if diff:
+      self.csv_tmpl = os.path.join(out_dir,"diff_pad{}.csv")
+      chan_bin_factor = 10
+    else:
+      self.csv_tmpl = os.path.join(out_dir,"pad{}.csv")
+      chan_bin_factor = 1
 
+    if bin_width is None:
+      bin_width = 2*acq.pixel_size
+    self.bin_width = bin_width
+    #self.chan_bin_widths = chan_bin_widths
+    chan_labs = acq.chan_ind_list
+    chan_bin_widths = np.array(chan_bin_widths) / chan_bin_factor
+    self.chan_bin_dict = dict(zip(chan_labs, chan_bin_widths))
+    #self.quants = [low_quant, high_quant]
+    self.acq = acq
+    self.time_df = acq.time_df
+    self.diff = diff
 
+  def pad_peaks(self, pad_ind):
+    bin_width = self.bin_width
+    pad_df = pd.read_csv(self.csv_tmpl.format(pad_ind))
+    d_vec = pad_df.dist.values
+    pad_df['dist_binned'] = (d_vec//bin_width)*bin_width + (bin_width/2)
+    inds = [(frame, pad_ind) for frame in pad_df.frame.values]
+    t_vec = self.time_df.loc[inds,'time'].values
+    pad_df['time'] = t_vec
+    gb_chan = pad_df.groupby('channel')
+    out_list = []
+    for chan, chan_df in gb_chan:
+      peak_df = self.chan_peaks(chan_df)
+      if peak_df is None:
+        continue
+      peak_df['pad'] = pad_ind
+      out_list.append(peak_df)
+    if len(out_list) > 1:
+      return pd.concat(out_list, ignore_index=False)
+    else:
+      return None
+
+  def chan_peaks(self, chan_df):
+    chan = chan_df.channel.values[0]
+    pad_ind = chan_df['pad'].values[0]
+    gb_cols = ['fluor','frame','dist_binned']
+    fluor_gb_frame_db = chan_df[gb_cols].groupby(gb_cols[1:])
+    q_lamb = lambda x : np.quantile(x, 0.95)
+    agg_df = fluor_gb_frame_db.agg(q_lamb).reset_index()
+    piv_df = agg_df.pivot(index='dist_binned', values='fluor', columns='frame')
+    arr = piv_df.values
+    arr_h, arr_w = arr.shape
+    #vmin, vmax = [np.quantile(agg_df.fluor.values, xx) for xx in self.quants]
+    chan_bin = self.chan_bin_dict[chan]
+    peak_df = self.peak_finder(agg_df, chan_bin)#, vmin, vmax)
+    if peak_df is None:
+      return None
+    peak_df['channel'] = chan
+    peak_df['acqname'] = chan_df.acqname.values[0]
+    inds = [(frame, pad_ind) for frame in peak_df.frame.values]
+    t_vec = self.time_df.loc[inds,'time'].values
+    peak_df['time'] = t_vec
+    return peak_df
+
+  def peak_finder(self, agg_df, chan_bin):#, vmin, vmax):
+    out_list = []
+    gb_cols = ['frame','dist_binned']
+    #itr = zip(('low','high'),(vmin, vmax))
+    n_bins = (agg_df.fluor.max()-agg_df.fluor.min())//chan_bin
+    thresh_vec = agg_df.fluor.min() + np.arange(n_bins)*chan_bin
+    for label, thresh in enumerate(thresh_vec):
+      bool_vec = agg_df.fluor >= thresh
+      sub_df = agg_df.loc[bool_vec, gb_cols].groupby(gb_cols[-1]).agg(np.min).reset_index()
+      d_vec, frame_vec = sub_df.dist_binned.values, sub_df.frame.values
+      peaks = signal.find_peaks(-1*frame_vec)[0]
+      sub_df['level'] = label
+      sub_df['thresh'] = thresh
+      out_list.append(sub_df.loc[peaks,:])
+    if len(out_list) > 1:
+      return pd.concat(out_list, ignore_index=True)
+    else:
+      return None
+
+  def fit_wrapper(self, peak_df):
+    columns = ['t0','c0','c1','c2','success','pad','channel','level']
+    pad_ind = peak_df['pad'].values[0]
+    inds = [(frame, pad_ind) for frame in peak_df.frame.values]
+    t_vec = self.time_df.loc[inds,'time'].values
+    peak_df['time'] = t_vec
+    gb_level = peak_df.groupby(['channel','level'])
+    out_list = []
+    for key, sub_df in gb_level:
+      chan, level = key
+      sub_df = sub_df.sort_values(by='time')
+      fithelper = FitHelper(sub_df.time, sub_df.dist_binned, 1e4)
+      self.fithelper = fithelper
+      fit_success, p_fit = fithelper.fit_wrapper()
+      if not fit_success:
+        p_fit = fithelper.p_est()
+      t0,c0,c1,c2 = p_fit
+      d_vec = np.array([[t0,c0,c1,c2,fit_success,pad_ind,chan,level]]).T
+      df_row = pd.DataFrame(dict(zip(columns, d_vec)))
+      out_list.append(df_row)
+    out_df = pd.concat(out_list, ignore_index=True)
+    float_cols = ['t0','c0','c1','c2','channel','pad']
+    for col in float_cols:
+      out_df[col] = out_df[col].values.astype(np.float)
+    int_cols = ['channel','pad']
+    for col in int_cols:
+      out_df[col] = out_df[col].values.astype(np.int)
+    return out_df
+
+  def proc_all_pads(self):
+    out_list = []
+    peak_out_list = []
+    for pad in np.unique(self.acq.cor_pos_df['pad'].values):
+      peak_df = self.pad_peaks(pad)
+      if peak_df is None:
+        continue
+      peak_out_list.append(peak_df)
+      if len(peak_df) > 0:
+        out_list.append(self.fit_wrapper(peak_df))
+    return pd.concat(out_list, ignore_index=True), pd.concat(peak_out_list, ignore_index=True)
 
 with open('txt_files/unique_good_dirs.txt', 'r') as f:
     lines = f.read().splitlines()
-
