@@ -604,6 +604,11 @@ class WriteHelper():
     self.norm_arr = np.zeros((pad_h, pad_w, 3),dtype=np.uint8)
 
   def __init__(self, acq, scale=8, pad_ind=None, bg_option='default', sigma=None, bg_sigma=None):
+    tiff_dir = os.path.join('/central','scratchio','jparkin','tiffstacks',acq.expname,acq.acqname)
+    if not os.path.exists(tiff_dir):
+      os.makedirs(tiff_dir)
+    self.tiff_dir = tiff_dir
+    self.tiff_fn = os.path.join(tiff_dir, 'pad{}.tif'.format(pad_ind))
     self.fig_dim = 20
     self.sigma = sigma
     self.bg_sigma = bg_sigma
@@ -758,8 +763,32 @@ class WriteHelper():
           tif.save(arr, metadata=metadata)
     return tiff_fn
 
-  def load_tiffstack(self, fn):
-    arr = skimage.external.tifffile.imread(fn)
+  def _get_tiff_metadata(self, tiff_fn):
+    tfile = skimage.external.tifffile.TiffFile(tiff_fn)
+    md_lines = tfile.info().split('\n')
+    imj_flag = False
+    imj_lines = []
+    for line in md_lines:
+      if imj_flag:
+        key, val = line.split(':')
+        imj_lines.append((key[2:], val[1:]))
+      if '* ImageJ' in line:
+        imj_flag = True
+    md_dict = dict(imj_lines)
+    return md_dict
+
+  def _check_tiff_metadata(self, tiff_fn):
+    md_dict = self._get_tiff_metadata(tiff_fn)
+    md_keys = ['scale','sigma','bg_sigma','bg_option']
+    md_vals = ['{}'.format(getattr(self, xx)) for xx in md_keys]
+    true_dict = dict(zip(md_keys,md_vals))
+    if not np.all([xx in md_dict for xx in md_keys]):
+      return False
+    check_vec = [md_dict[key]==true_dict[key] for key in md_keys]
+    return np.all(check_vec)
+
+  def load_tiffstack(self, fn, memmap=False):
+    arr = skimage.external.tifffile.imread(fn, memmap=memmap)
     nh, nw, nc = self.pad_arr.shape
     nf = len(self.acq.frame_vec)
     arr_shape = (nf, nc, nh, nw)
@@ -984,7 +1013,7 @@ class Acquisition():
                 print(err)
 
     def write_tiff_stack(self):
-      tiff_tmpl = os.path.join('central','scratchio','jparkin','{}', '{}.tiff')
+      tiff_tmpl = os.path.join('/central','scratchio','jparkin','{}', '{}.tif')
 
 class ProcessPad():
   '''
@@ -1089,7 +1118,7 @@ class ComparisonAnimator():
         
     def _animate_thresh(self, frame):
         processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
-        im_dist, yfp_thresh = processor._yfp_dist(frame)
+        im_dist, yfp_thresh, _ = processor._yfp_dist(frame)
         wh.pad_arr[:,:,0] = im_dist==0
         for chan in [1,2]:
             thresh_arr, chan_arr, thresh = processor._chan_thresh(frame, chan)
@@ -1107,7 +1136,7 @@ class ComparisonAnimator():
         
     def _animate_thresh_from_df(self, frame):
         processor, acq, wh = self.processor, self.processor.acq, self.processor.pad_helper
-        im_dist, yfp_thresh = processor._yfp_dist(frame)
+        im_dist, yfp_thresh, _ = processor._yfp_dist(frame)
         df = pd.read_csv(self.tmpl.format(self.processor.pad_ind, frame))
         wh.pad_arr[:] = 0
         x_vec, y_vec = df.loc[:,['x','y']].values.astype(np.int).T
@@ -1162,8 +1191,9 @@ class ProcessUnorderedDiff():
 
   Processor class uses WriteHelper to grab bg-subtracted frames
   '''
-  def __init__(self, acq, pad_ind, scale, sigma=None, bg_sigma=None, print_img=False, bg_option='default',
-      diff=False):
+  def __init__(self, acq, pad_ind, scale, sigma=None, bg_sigma=None, 
+      print_img=False, bg_option='default',
+      diff=False, overwrite=False):
     # Setup attributes
     self.acq = acq
     self.pad_ind = pad_ind
@@ -1179,20 +1209,25 @@ class ProcessUnorderedDiff():
       self.bg_sigma = bg_sigma
     self.bg_option = bg_option
     self.minsize = 50/(scale**2)
-    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, sigma=sigma, bg_sigma=bg_sigma)
+    self.pad_helper = WriteHelper(acq, scale, pad_ind, bg_option=bg_option, 
+        sigma=sigma, bg_sigma=bg_sigma)
     ny, nx, nc = self.pad_helper.pad_arr.shape
     self.x_arr = np.tile(np.arange(nx).reshape((1,nx)),(ny,1))
     self.y_arr = np.tile(np.arange(ny).reshape((ny,1)),(1,nx))
-    tiff_dir = os.path.join('central','scratchio','jparkin','tiffstacks',acq.expname,acq.acqname)
+    tiff_dir = os.path.join('/central','scratchio','jparkin','tiffstacks',
+        acq.expname,acq.acqname)
     if not os.path.exists(tiff_dir):
       os.makedirs(tiff_dir)
     self.tiff_dir = tiff_dir
-    self._load_arrs()
+    self._load_arrs(overwrite=overwrite)
     self._setup_thresh()
 
     # Print img setup
     self.print_img = print_img
     if print_img:
+      self._setup_printer()
+
+  def _setup_printer(self):
       self.printer = ComparisonAnimator(self)
       out_tmpl = 'frame{:02d}_pad{:02d}.png'
       if self.diff:
@@ -1201,56 +1236,77 @@ class ProcessUnorderedDiff():
         out_tmpl = os.path.abspath(os.path.join('.','pngs','thresh_progress', out_tmpl))
       self.png_tmpl = out_tmpl
 
-  def _check_tiff_metadata(self, tiff_fn):
-    tfile = skimage.external.tifffile.TiffFile(tiff_fn)
-    md_lines = tfile.info().split('\n')
-    imj_flag = False
-    imj_lines = []
-    for line in md_lines:
-      if imj_flag:
-        key, val = line.split(':')
-        imj_lines.append((key[2:], val[1:]))
-      if '* ImageJ' in line:
-        imj_flag = True
-    md_dict = dict(imj_lines)
-    md_keys = ['scale','sigma','bg_sigma','bg_option']
-    md_vals = ['{}'.format(getattr(self, xx)) for xx in md_keys]
-    true_dict = dict(zip(md_keys,md_vals))
-    check_vec = [md_dict[key]==true_dict[key] for key in md_keys]
-    return np.all(check_vec)
+  def _save_tiffstack(self, tiff_fn, arr):
+    keys = ['scale','bg_option','sigma','bg_sigma']
+    values = self.scale, self.bg_option, self.sigma, self.bg_sigma
+    metadata = dict(zip(keys, values))
+    tiff_dir = os.path.dirname(tiff_fn)
+    assert os.path.isdir(tiff_dir)
+    skimage.external.tifffile.imsave(tiff_fn, arr, metadata=metadata, imagej=True)
+    return tiff_fn
 
-  def _load_arrs(self):
+  def load_tiffstack(self, fn, memmap=False):
+    arr = skimage.external.tifffile.imread(fn, memmap=memmap)
+    return arr
+
+  def _load_arrs(self, overwrite=False):
     acq = self.acq
     # make writehelper and setup arr
     n_frames = len(acq.frame_vec)
     im_h, im_w, n_chan = self.pad_helper.pad_arr.shape
     arr = np.zeros((n_frames, n_chan, im_h, im_w))
     scratch_dir = self.tiff_dir
-    fn_stem = 'pad{}.tiff'.format(self.pad_ind)
-    tiff_fn = os.path.join(scratch_dir, fn_stem)
+    fn_stem = '{}pad{}.tif'
+    scr_tmpl = os.path.join(scratch_dir, fn_stem)
+    prefixes = ['', 'filt_', 'diff_']
+    scratch_tiffs = [scr_tmpl.format(xx, self.pad_ind) for xx in prefixes]
+    # Load movie arr
+    tiff_fn = scratch_tiffs[0]
     load_flag = False
     if os.path.exists(tiff_fn):
       # Check metadata
-      load_flag = self._check_tiff_metadata(tiff_fn)
+      load_flag = self.pad_helper._check_tiff_metadata(tiff_fn)
     if load_flag:
-      arr = self._load_movie(tiff_fn)
+      arr = self.pad_helper.load_tiffstack(tiff_fn)
     else:
-      for frame in acq.frame_vec:
-        self.pad_helper.get_frame_arr(frame)
-        for ci in np.arange(n_chan):
-          arr[frame,ci,:,:,] = self.pad_helper.pad_arr[:,:,ci].copy()
+      arr = self.pad_helper.load_movie()
     self.arr = arr
+
+    # Load filt movie arr
     sg_filter = lambda arr : signal.savgol_filter(arr, 9, 1, axis=0)
     self.sg_filter = sg_filter
-    self.filt_arr = sg_filter(arr)
-    self.diff_arr = sg_filter(np.diff(self.filt_arr, axis=0))
+    tiff_fn = scratch_tiffs[1]
+    load_flag = False
+    if os.path.exists(tiff_fn):
+      # Check metadata
+      load_flag = self.pad_helper._check_tiff_metadata(tiff_fn)
+    if load_flag and not overwrite:
+      self.filt_arr = self.load_tiffstack(tiff_fn)
+    else:
+      self.filt_arr = sg_filter(arr)
+      self._save_tiffstack(tiff_fn, self.filt_arr)
+
+    # Load diff movie arr
+    self.sg_filter = sg_filter
+    tiff_fn = scratch_tiffs[2]
+    load_flag = False
+    if os.path.exists(tiff_fn):
+      # Check metadata
+      load_flag = self.pad_helper._check_tiff_metadata(tiff_fn)
+    if load_flag and not overwrite:
+      self.diff_arr = self.load_tiffstack(tiff_fn)
+    else:
+      self.diff_arr = sg_filter(np.diff(self.filt_arr, axis=0))
+      self._save_tiffstack(tiff_fn, self.diff_arr)
+
     self.arr_dict = dict(zip(['arr','filt','diff'],[self.arr, self.filt_arr, self.diff_arr]))
-    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 'scale', 'thresh', 'dist']
+    self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel', 
+                    'scale', 'thresh', 'dist', 'rad']
 
   def _setup_thresh(self, overwrite=False):
     thresh_df_fn = os.path.join(self.acq.super_dir,"csvs",'empirical_thresholds.csv')
     if overwrite or not os.path.exists(thresh_df_fn):
-      self.thresh_df = self._make_thresh_df()
+      self.thresh_df = self._make_thresh_df(self.acq.bg_pos_list)
       self.thresh_df.to_csv(thresh_df_fn)
     else:
       self.thresh_df = pd.read_csv(thresh_df_fn, index_col=['type','ci','frame'])
@@ -1260,17 +1316,17 @@ class ProcessUnorderedDiff():
     self.thresh_min_dict = dict(zip([2,3,5],[1e3,5e2,4e3]))
     self.thresh_min_diff_dict = dict(zip([2,3,5],[40,30,170]))
 
-  def _load_movie(self, tiff_fn):
-    return self.pad_helper.load_tiffstack(tiff_fn)
-
   def _load_pad_arr(self, pad_ind):
     pad_helper = WriteHelper(self.acq,
                              scale=self.scale,
                              sigma=self.sigma,
                              bg_sigma=self.bg_sigma,
-                             pad_ind=pad_ind, 
+                             pad_ind=pad_ind,
                              bg_option=self.bg_option)
-    return self.pad_helper.load_movie()
+    if pad_helper._check_tiff_metadata(pad_helper.tiff_fn):
+      return pad_helper.load_tiffstack(pad_helper.tiff_fn)
+    else:
+      return pad_helper.load_movie()
 
   def _make_thresh_df(self, bg_pads):
     # setup array shapes and load images
@@ -1286,12 +1342,13 @@ class ProcessUnorderedDiff():
     thresh_df = pd.DataFrame(dtype=np.float)
     arr_labels = ['arr', 'filt', 'diff']
     bounds = [0.05,0.5,0.95]
+    thresh_factor = [3,2][np.int(self.diff)]
     for label, arr in zip(arr_labels, [bg_arrs, filt_arrs, diff_arrs]):
       f_vec = np.arange(arr.shape[0])
       bound_arrs = np.quantile(arr, q=bounds, axis=(2,3,4))
       for ci in c_vec:
         bound_vecs = bound_arrs[:,:,ci]
-        thresh_vec = 3*(bound_vecs[-1,:] - bound_vecs[0,:]) + bound_vecs[1,:]
+        thresh_vec = thresh_factor*(bound_vecs[-1,:] - bound_vecs[0,:]) + bound_vecs[1,:]
         ind_tup = [(label, ci, frame) for frame in f_vec]
         multiindex = pd.MultiIndex.from_tuples(ind_tup, names=['type','ci','frame'])
         thresh_row = pd.DataFrame(index=multiindex, data=thresh_vec, columns=['threshold'])
@@ -1313,15 +1370,25 @@ class ProcessUnorderedDiff():
     chan, c_i = 2, 0
     thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i, arr_type='arr')
     if np.any(thresh_arr):
-      im_dist = ndi.morphology.distance_transform_bf(False==thresh_arr)
+      d_coeff = self.acq.pixel_size * self.scale
+      lab_arr, n_senders = skimage.morphology.label(thresh_arr, return_num=True)
+      sen_labs = np.arange(n_senders)+1
+      dist_arrs = [d_coeff*ndi.morphology.distance_transform_bf(lab_arr!=xx) for xx in sen_labs]
+      rad_vec = [d_coeff*np.sqrt(np.sum(lab_arr==xx)/np.pi) for xx in sen_labs]
+      im_dist = d_coeff*ndi.morphology.distance_transform_bf(False==thresh_arr)
+      mask_arrs = [(im_dist == dist_arr) for dist_arr in dist_arrs]
+      sum_masks = np.sum(mask_arrs,axis=0)
+      rad_arrs = [rad*mask_arr for rad, mask_arr in zip(rad_vec, mask_arrs)]
+      rad_arr = np.sum(rad_arrs,axis=0)/sum_masks
     else:
       im_dist = np.sqrt(np.power(self.x_arr-nx//2,2) + np.power(self.y_arr-ny//2,2))
-    return im_dist, thresh
+      rad_arr = np.ones_like(im_dist)
+    return im_dist, thresh, rad_arr
 
   def _chan_diff_thresh(self, frame, c_i):
     return self._chan_thresh(frame, c_i, 'diff')
 
-  def _update_df(self, thresh_arr, chan_arr, frame, chan, im_dist, thresh):
+  def _update_df(self, thresh_arr, chan_arr, frame, chan, im_dist, thresh, rad_arr):
     n_thresh = np.sum(thresh_arr)
     if np.any(thresh_arr):
       ones_vec = np.ones(n_thresh)
@@ -1333,9 +1400,10 @@ class ProcessUnorderedDiff():
       pad_vec = self.pad_ind*ones_vec
       scale_vec = self.scale*ones_vec
       thresh_vec = thresh*ones_vec
-      d_coeff = self.acq.pixel_size * self.scale
-      dist_vec = im_dist[thresh_arr].flatten() * d_coeff
-      data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec, scale_vec, thresh_vec, dist_vec]
+      dist_vec = im_dist[thresh_arr].flatten()
+      rad_vec = rad_arr[thresh_arr].flatten()
+      data_cols = [frame_vec, x_vec, y_vec, pad_vec, fluor_vec, chan_vec,
+                   scale_vec, thresh_vec, dist_vec, rad_vec]
       update_df = pd.DataFrame(dict(zip(self.columns, data_cols)))
       return update_df
     return None
@@ -1358,7 +1426,7 @@ class ProcessUnorderedDiff():
 
     out_df = pd.DataFrame(columns=self.columns, dtype=np.float)
     # Get distance array and prep frame data
-    im_dist, y_thresh = self._yfp_dist(frame)
+    im_dist, y_thresh, rad_arr = self._yfp_dist(frame)
     if self.print_img:
       pad_helper.pad_arr[:,:,0] = im_dist==0
 
@@ -1371,7 +1439,7 @@ class ProcessUnorderedDiff():
         thresh_arr, chan_arr, thresh = self._chan_thresh(frame, c_i)
       if self.print_img:
         printer._prep_thresh_chan(im_dist, thresh_arr, c_i)
-      update_df = self._update_df(thresh_arr, chan_arr, frame, chan, im_dist, thresh)
+      update_df = self._update_df(thresh_arr, chan_arr, frame, chan, im_dist, thresh, rad_arr)
       if not (update_df is None):
         out_df = pd.concat([out_df, update_df], ignore_index=True)
     if self.print_img:
