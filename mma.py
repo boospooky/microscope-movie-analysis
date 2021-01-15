@@ -66,7 +66,11 @@ binning_index = pd.Index(np.array(['1x1','2x2','4x4']),name='binning')
 pixel_size_table = pd.DataFrame(index=objective_index, columns=binning_index, data=rel_len_arr*2.585)
 
 # manual metadata
-pad_bg_pos_lists = {'200627_secondfinalday/img_1':(36,),'200626_finalday/img_1':(25,),'200613_unordered/img_3':(213,214,215,216)}
+pad_bg_pos_lists = {'200627_secondfinalday/img_1':(36,),
+                    '200626_finalday/img_1':(25,),
+                    '200613_unordered/img_3':(213,214,215,216),
+                    '190313_cin_again/20190313_3':(4,5,6,21,22),
+                    '191217_rpa_thin_attmpt/img_1':(141,144,147,150,153)}
 # '200613_unordered/img_3':(24,25,31,32)
 
 pad_metadata_dict = {'180312_full_circuit_w_senders/20180302_2':((0,1,2)),
@@ -685,8 +689,9 @@ class WriteHelper():
     for source_chan in inter_df.source_chan.values:
       sub_inter_df = gb_source_chan.get_group(source_chan)
       dest_chan, rate = sub_inter_df[['dest_chan','rate']].values[0]
-      source_chan_i, dest_chan_i = (chan_dict[source_chan], chan_dict[dest_chan])
-      self.pad_arr[:,:,dest_chan_i] -= rate*self.pad_arr[:,:,source_chan_i]
+      if (source_chan in chan_dict) and (dest_chan in chan_dict):
+        source_chan_i, dest_chan_i = (chan_dict[source_chan], chan_dict[dest_chan])
+        self.pad_arr[:,:,dest_chan_i] -= rate*self.pad_arr[:,:,source_chan_i]
 
   def _prep_img_arr(self):
     pad_h, pad_w = self.pad_arr.shape[:2]
@@ -779,14 +784,12 @@ class WriteHelper():
     md_dict = dict(imj_lines)
     return md_dict
 
-  def _check_tiff_metadata(self, tiff_fn):
+  def _check_tiff_metadata(self, tiff_fn, true_dict):
     md_dict = self._get_tiff_metadata(tiff_fn)
-    md_keys = ['scale','bg_option','sigma','bg_sigma','sg_width','sg_order']
-    md_vals = ['{}'.format(getattr(self, xx)) for xx in md_keys]
-    true_dict = dict(zip(md_keys,md_vals))
-    if not np.all([xx in md_dict for xx in md_keys]):
+    if not np.all([xx in md_dict for xx in true_dict]):
       return False
-    check_vec = [md_dict[key]==true_dict[key] for key in md_keys]
+    # ungodly casting
+    check_vec = [type(true_dict[key])(md_dict[key])==true_dict[key] for key in true_dict]
     return np.all(check_vec)
 
   def load_tiffstack(self, fn, memmap=False):
@@ -1237,16 +1240,17 @@ class ProcessUnorderedDiff():
     self.tiff_dir = tiff_dir
     self.print_img = print_img
 
-    # If overwrite is false, proceed with setup
-    if overwrite==False:
-      self._setup(overwrite)
-
-  def _setup(self, overwrite=False):
     scratch_dir = self.tiff_dir
     fn_stem = '{}pad{}{}.tif'
     self.scr_tmpl = os.path.join(scratch_dir, fn_stem)
     self.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel',
                     'scale', 'thresh', 'dist', 'rad', 'label']
+
+    # If overwrite is false, proceed with setup
+    # if overwrite==False:
+    #   self._setup(overwrite)
+
+  def _setup(self, overwrite=False):
     self._load_arrs(overwrite)
     self._setup_thresh(overwrite)
     self._load_masks(overwrite)
@@ -1284,17 +1288,17 @@ class ProcessUnorderedDiff():
     return arr
 
   def _load_helper(self, tiff_fn, overwrite):
+    keys = ['scale','bg_option','sigma','bg_sigma','sg_width','sg_order']
+    values = [getattr(self, key) for key in keys]
+    self_md = dict(zip(keys,values))
     if os.path.exists(tiff_fn) and not overwrite:
       # Check metadata
-      if self.pad_helper._check_tiff_metadata(tiff_fn):
+      if self.pad_helper._check_tiff_metadata(tiff_fn, true_dict=self_md):
         arr = self.load_tiffstack(tiff_fn, memmap=True)
         load_flag = False
       else:
         err_str = "Input parameters do no match tiff stack. Set overwrite=True to proceed.\n{}\n{}"
         file_md = self.pad_helper._get_tiff_metadata(tiff_fn)
-        keys = ['scale','bg_option','sigma','bg_sigma','sg_width','sg_order']
-        values = [getattr(self, key) for key in keys]
-        self_md = dict(zip(keys,values))
         raise(ValueError(err_str.format(file_md, self_md)))
     else:
       load_flag = True
@@ -1372,7 +1376,10 @@ class ProcessUnorderedDiff():
                              bg_sigma=self.bg_sigma,
                              pad_ind=pad_ind,
                              bg_option=self.bg_option)
-    if pad_helper._check_tiff_metadata(pad_helper.tiff_fn):
+    keys = ['scale','bg_option','sigma','bg_sigma','sg_width','sg_order']
+    values = [getattr(self, key) for key in keys]
+    self_md = dict(zip(keys,values))
+    if pad_helper._check_tiff_metadata(pad_helper.tiff_fn, true_dict=self_md):
       return pad_helper.load_tiffstack(pad_helper.tiff_fn)
     else:
       return pad_helper.load_movie()
@@ -1631,6 +1638,8 @@ class ProcessUnorderedDiff():
           printer._prep_thresh_chan(im_dist, thresh_arr, c_i)
         update_df = self._update_df(thresh_arr, chan_mask, chan_arr, frame, chan, im_dist, thresh, rad_arr)
         df_list.append(update_df)
+      elif self.print_img:
+        printer._prep_thresh_chan(im_dist, np.zeros_like(im_dist), c_i)
     if np.sum([len(xx) for xx in df_list])>0:
       out_df = pd.concat(df_list, ignore_index=True)
     else:
