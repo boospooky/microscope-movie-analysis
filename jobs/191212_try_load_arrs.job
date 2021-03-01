@@ -1,0 +1,117 @@
+#!/home/jparkin/anaconda3/envs/jpdev/bin/python
+
+#Submit this script with: sbatch thefilename
+
+#SBATCH --time=12:30:00   # walltime
+#SBATCH --ntasks=1   # number of processor cores (i.e. tasks)
+#SBATCH --mem-per-cpu=24G   # memory per CPU core
+#SBATCH -J "analyze_unordered_exps_diff"   # job name
+#SBATCH --mail-user=jparkin@caltech.edu   # email address
+#SBATCH --mail-type=END
+#SBATCH --array=0-3
+
+
+# LOAD MODULES, INSERT CODE, AND RUN YOUR PROGRAMS HERE
+# source ~/.bashrc
+import os
+import sys
+import traceback
+import importlib
+import time
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+os.chdir('/groups/murray-biocircuits/jparkin/movies/microscope-movie-analysis')
+pad_ind = os.getenv("SLURM_ARRAY_TASK_ID")
+if pad_ind is None:
+  pad_ind = 0
+else:
+  pad_ind = np.int(pad_ind)
+file_ind = 37 # 191212
+scale = 2#2
+sigma = 1
+sg_width = 7
+sg_order = 3
+bg_sigma = 16#32
+print_img=True
+bg_option='pos_list'
+overwrite=True
+
+spec = importlib.util.spec_from_file_location("module.name", "/groups/murray-biocircuits/jparkin/movies/microscope-movie-analysis/mma.py")
+mma = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mma)
+
+if True:
+  with open('/groups/murray-biocircuits/jparkin/movies/microscope-movie-analysis/txt_files/unique_good_dirs_nodatadirs.txt', 'r') as f:
+    lines = f.read().splitlines()
+else:
+  with open('/groups/murray-biocircuits/jparkin/movies/microscope-movie-analysis/txt_files/bad_files.txt', 'r') as f:
+    lines = f.read().splitlines()
+
+fn = os.path.abspath(lines[int(file_ind)])
+acq = mma.Acquisition(fn)
+out_dir = os.path.join(acq.super_dir,"csvs")
+if not os.path.isdir(out_dir):
+  os.mkdir(out_dir)
+print(acq.super_dir)
+
+if __name__ == '__main__':
+  # For now, assert that the pixel size is 2.585
+  procdiff = mma.ProcessUnorderedDiff(acq, pad_ind, scale=scale, sigma=sigma,
+      bg_sigma=bg_sigma, print_img=print_img, bg_option=bg_option, diff=False, overwrite=False)
+  scratch_dir = procdiff.tiff_dir
+  fn_stem = '{}pad{}{}.tif'
+  procdiff.scr_tmpl = os.path.join(scratch_dir, fn_stem)
+  procdiff.columns = ['frame', 'x', 'y', 'pad', 'fluor', 'channel',
+                  'scale', 'thresh', 'dist', 'rad']
+  if not hasattr(procdiff, 'sg_filter'):
+    sg_filter = lambda arr : mma.signal.savgol_filter(arr, 3, 1, axis=0)
+    procdiff.sg_filter = sg_filter
+  procdiff._load_arrs(True)
+  # Setup thresh with overwrite=True should be done once, not in an array job
+  procdiff._setup_thresh(True)
+  procdiff._load_masks(True)
+
+#  # Print img setup
+#  if procdiff.print_img:
+#    procdiff._setup_printer()
+#  # for prefix, diff in zip(['','diff_'],[False, True]):
+#  for prefix, diff in zip(['','diff_'],[False,True]):
+#    try:
+#      procdiff.diff = diff
+#      procdiff._setup_printer()
+#      procdiff.begin_stacks()
+#      peak_out_fn = os.path.join(acq.super_dir, "csvs", '{}peaks_pad{}.csv').format(prefix, pad_ind)
+#      front_out_fn = os.path.join(acq.super_dir, "csvs", '{}frontfitter_pad{}.csv').format(prefix, pad_ind)
+#      parent_dir = "/central/groups/murray-biocircuits/jparkin/movies/microscope-movie-analysis/pngs"
+#      plot_fn_tmpl = os.path.join(parent_dir, "{}thresh_fitting/frontfit_pad{:02d}.png")
+#      fitter = mma.FrontFitter(acq, diff=diff)
+#      peak_df = fitter.pad_peaks(pad_ind)
+#      if peak_df is None:
+#        peak_df = pd.DataFrame()
+#        fit_df = pd.DataFrame()
+#      else:
+#        peak_df['diff'] = diff
+#        fit_df = fitter.fit_wrapper(peak_df)
+#        fit_df['diff'] = diff
+#      if len(peak_df) > 0:
+#        peak_df.to_csv(peak_out_fn, index=False)
+#        fit_df.to_csv(front_out_fn, index=False)
+#        plot_fits(peak_df, fit_df)
+#      with open('debug.log', 'a') as f_debug:
+#        f_debug.write(time.asctime()+'\n')
+#        f_debug.write('{} process unordered finished {}pad{}'.format(fn, prefix, pad_ind)+'\n')
+#    except Exception as error:
+#      with open('debug.log', 'a') as f_debug:
+#        f_debug.write(time.asctime()+'\n')
+#        f_debug.write(error.__repr__()+'\n')
+#        f_debug.write('{} process unordered failed {}pad{}'.format(fn, prefix, pad_ind)+'\n')
+#        f_debug.write(traceback.format_exc()+'\n')
+#        f_debug.write('{} failed'.format(fn)+'\n')
+else:
+  with open('debug.log', 'a') as f_debug:
+    f_debug.write(time.asctime()+'\n')
+    f_debug.write('analyze unordered failed'+'\n')
+    #f_debug.write(traceback.format_exc()+'\n')
+    f_debug.write('{} failed'.format(fn)+'\n')

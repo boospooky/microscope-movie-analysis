@@ -1,0 +1,29 @@
+#!/usr/bin/bash
+
+# Submit this script with: sbatch thefilename
+
+#SBATCH --time=1:00:00   # walltime
+#SBATCH --ntasks=1   # number of processor cores (i.e. tasks)
+#SBATCH --mem-per-cpu=2G   # memory per CPU core
+#SBATCH -J "make gifs from pngs"   # job name
+#SBATCH --mail-user=jparkin@caltech.edu   # email address
+#SBATCH --mail-type=END
+
+# LOAD MODULES, INSERT CODE, AND RUN YOUR PROGRAMS HERE
+source ~/.bashrc
+pngdir="/home/jparkin/groupdir/movies/200626_finalday/img_1/pngs/thresh_progress"
+gifdir="/home/jparkin/groupdir/movies/200626_finalday/img_1/anims/thresh_prog"
+
+diffpngdir="/home/jparkin/groupdir/movies/200626_finalday/img_1/pngs/diff_thresh_progress"
+diffgifdir="/home/jparkin/groupdir/movies/200626_finalday/img_1/anims/diff_thresh_prog"
+
+for padind in {0..36}
+do
+  giffn=$(printf "%s/pad%02d.gif" $gifdir $padind)
+  convert -delay 10 $(ls $(printf "%s/frame*_pad%02d.png" $pngdir $padind)) +repage -loop 0 $giffn
+  # convert -delay 10 $giffn +repage -loop 0 $giffn
+
+  giffn=$(printf "%s/pad%02d.gif" $diffgifdir $padind)
+  # convert -delay 10 $giffn +repage -loop 0 $giffn
+  convert -delay 10 $(ls $(printf "%s/frame*_pad%02d.png" $diffpngdir $padind)) +repage -loop 0 $giffn
+done
