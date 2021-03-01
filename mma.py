@@ -68,8 +68,14 @@ pixel_size_table = pd.DataFrame(index=objective_index, columns=binning_index, da
 # manual metadata
 pad_bg_pos_lists = {'200627_secondfinalday/img_1':(36,),
                     '200626_finalday/img_1':(25,),
+                    '200303_sender_receiver/img_2':(75,79,83,87,91),
                     '200613_unordered/img_3':(213,214,215,216),
+                    '190727_pfbs/img_2':(28,30,32),
+                    '190316/20190316_2':(80,83,88),
+                    '200213_cin_tests/img_1':(28,29,224,205),
                     '190313_cin_again/20190313_3':(4,5,6,21,22),
+                    '191212_rpa_senders_again/img_1':(84,88,82,96,95),
+                    '180711/20180711_1':(0,1,26,25,24),
                     '191217_rpa_thin_attmpt/img_1':(141,144,147,150,153)}
 # '200613_unordered/img_3':(24,25,31,32)
 
@@ -600,7 +606,7 @@ class WriteHelper():
         count_arr[y0:y0+h,x0:x0+w] += self.one_arr
     self.count_arr,self.uncovered_arr,self.covered_arr = count_arr,count_arr<=0,count_arr>0
     self.count_arr[self.uncovered_arr] = 1
-    self.h, self.w = h, w
+    self.h, self.w = pad_h, pad_w
     self.fig_h, self.fig_w = fig_h, fig_w
     self.pixel_size = pixel_size
     self.rel_mins,self.pos_list,self.pos_lims = rel_mins,pos_list,pos_lims
@@ -702,7 +708,7 @@ class WriteHelper():
       frame_vals = self.pad_arr[:,:,chan_ind][self.covered_arr].flatten()
       frame_vals = np.sort(np.unique(frame_vals))
       n_vals = len(frame_vals)
-      ind_min, ind_max = np.array([0.1*n_vals, 1*n_vals-1],dtype=np.int)
+      ind_min, ind_max = np.array([0.1*n_vals, 0.95*n_vals-1],dtype=np.int)
       vmin, vmax = frame_vals[ind_min], frame_vals[ind_max]
       vmin = np.max([20,vmin])
       vmax = np.max([vmax+vmin,vmin*2])
@@ -1386,7 +1392,7 @@ class ProcessUnorderedDiff():
 
   def _load_pos_stack(self, pos):
     acq = self.acq
-    im_h, im_w = acq.im_height, acq.im_width
+    im_h, im_w = self.pad_helper.one_arr.shape
     n_chan = len(acq.chan_ind_list)
     c_vec = np.arange(n_chan)
     n_frames = len(acq.frame_vec)
@@ -1398,7 +1404,7 @@ class ProcessUnorderedDiff():
 
   def _make_thresh_df(self, bg_pos_list=None, bg_tiff_fn=None):
     # setup array shapes and load images
-    im_h, im_w = self.acq.im_height, self.acq.im_width
+    im_h, im_w = self.pad_helper.one_arr.shape
     n_chan = len(self.acq.chan_ind_list)
     n_frames = len(self.acq.frame_vec)
     c_vec = np.arange(n_chan)
